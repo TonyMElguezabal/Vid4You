@@ -1,0 +1,150 @@
+import type { FastifyInstance } from "fastify";
+import type { ZodTypeProvider } from "fastify-type-provider-zod";
+import { z } from "zod";
+import { adminDeniedSchema } from "./adminAccess.ts";
+import { CONNECTION_CHECKS, runConnectionCheck, type ConnectionCheck } from "./providerConnectionCheck.ts";
+import { keyFor } from "./keyStore.ts";
+import { getProfile } from "./providerProfiles.ts";
+import { createProfile, deleteProfile, editProfile, listProfileViews } from "./providerAdmin.ts";
+import { ADAPTER_TYPES, PROVIDER_STAGES } from "./providerTypes.ts";
+
+// manage-providers-from-admin (JOS-218), design Decision 9 — the provider-profile routes. They are registered inside
+// the `/admin` child plugin, so the Administrator gate has already answered 401 before any body is parsed.
+
+const problemSchema = z.object({ field: z.string(), message: z.string() });
+const problemsSchema = z.object({ ok: z.literal(false), problems: z.array(problemSchema) });
+const notFoundSchema = z.object({ ok: z.literal(false), reason: z.literal("not-found") });
+/** Either a route's own refusal, or Fastify's validation error for a malformed body or parameter. */
+const validationErrorSchema = z.object({ statusCode: z.number(), error: z.string(), message: z.string() }).passthrough();
+
+export const profileViewSchema = z.object({
+  id: z.string(),
+  stage: z.enum(PROVIDER_STAGES),
+  adapterType: z.string(),
+  label: z.string(),
+  parameters: z.record(z.unknown()),
+  keyStatus: z.enum(["stored", "environment", "missing"]),
+  keyHint: z.string().nullable(),
+  usable: z.boolean(),
+  problems: z.array(problemSchema),
+  active: z.boolean(),
+  retired: z.boolean(),
+  /** configurable-video-connector (JOS-219), Decision 5 — set when this save changed a connector's host and cleared its key. */
+  keyCleared: z.literal(true).optional(),
+});
+
+const fieldSchema = z.object({
+  path: z.array(z.string()),
+  label: z.string(),
+  kind: z.enum(["text", "number", "choice", "json"]),
+  required: z.boolean(),
+  help: z.string().optional(),
+  choices: z.array(z.string()).optional(),
+  acceptsNumber: z.boolean().optional(),
+});
+
+const connectionCheckSchema = z.object({ charged: z.boolean(), covers: z.string() });
+
+// test-provider-connection (JOS-220), design Decision 5 — the closed result of a test: the page writes the sentences.
+const testResultSchema = z.strictObject({
+  outcome: z.enum(["connected", "key-rejected", "not-found", "unreachable", "unexpected", "no-key", "no-check"]),
+  covers: z.string(),
+  httpStatus: z.number().optional(),
+});
+
+export function registerProviderProfileRoutes(admin: FastifyInstance): void {
+  const typedAdmin = admin.withTypeProvider<ZodTypeProvider>();
+
+  typedAdmin.get(
+    "/provider-types",
+    { schema: { response: { 200: z.object({ types: z.array(z.object({ id: z.string(), stage: z.enum(PROVIDER_STAGES), label: z.string(), fields: z.array(fieldSchema), connectionCheck: connectionCheckSchema })) }), 401: adminDeniedSchema } } },
+    // eslint-disable-next-line @typescript-eslint/require-await -- a Fastify handler is async by contract, so a throw becomes a rejected reply
+    async () => ({ types: ADAPTER_TYPES.map((type) => ({ ...type, connectionCheck: { charged: CONNECTION_CHECKS[type.id].charged, covers: CONNECTION_CHECKS[type.id].covers } })) }),
+  );
+
+  typedAdmin.get(
+    "/provider-profiles",
+    { schema: { response: { 200: z.object({ profiles: z.array(profileViewSchema) }), 401: adminDeniedSchema } } },
+    // eslint-disable-next-line @typescript-eslint/require-await -- a Fastify handler is async by contract, so a throw becomes a rejected reply
+    async () => ({ profiles: listProfileViews() }),
+  );
+
+  typedAdmin.post(
+    "/provider-profiles",
+    {
+      schema: {
+        body: z.object({ stage: z.enum(PROVIDER_STAGES), adapterType: z.string(), label: z.string(), parameters: z.record(z.unknown()), apiKey: z.string().optional(), copyKeyFrom: z.string().optional() }),
+        response: { 201: profileViewSchema, 400: z.union([problemsSchema, validationErrorSchema]), 401: adminDeniedSchema },
+      },
+    },
+    async (request, reply) => {
+      const result = createProfile(request.body);
+      if (result.ok) return reply.code(201).send(result.profile);
+      return reply.code(400).send({ ok: false as const, problems: result.kind === "invalid" ? result.problems : [] });
+    },
+  );
+
+  typedAdmin.put(
+    "/provider-profiles/:id",
+    {
+      schema: {
+        params: z.object({ id: z.string().min(1) }),
+        body: z.object({ label: z.string(), parameters: z.record(z.unknown()), apiKey: z.string().optional() }),
+        response: { 200: profileViewSchema, 400: z.union([problemsSchema, validationErrorSchema]), 401: adminDeniedSchema, 404: notFoundSchema },
+      },
+    },
+    async (request, reply) => {
+      const result = editProfile(request.params.id, request.body);
+      if (result.ok) return result.profile;
+      if (result.kind === "not-found") return reply.code(404).send({ ok: false as const, reason: "not-found" as const });
+      return reply.code(400).send({ ok: false as const, problems: result.problems });
+    },
+  );
+
+  typedAdmin.delete(
+    "/provider-profiles/:id",
+    {
+      schema: {
+        params: z.object({ id: z.string().min(1) }),
+        response: {
+          200: z.object({ result: z.enum(["removed", "retired"]) }),
+          401: adminDeniedSchema,
+          404: notFoundSchema,
+          409: z.object({ ok: z.literal(false), reason: z.literal("active"), stage: z.enum(PROVIDER_STAGES) }),
+        },
+      },
+    },
+    async (request, reply) => {
+      const result = deleteProfile(request.params.id);
+      if (result.ok) return { result: result.result };
+      if (result.kind === "not-found") return reply.code(404).send({ ok: false as const, reason: "not-found" as const });
+      return reply.code(409).send({ ok: false as const, reason: "active" as const, stage: result.stage });
+    },
+  );
+
+  typedAdmin.post(
+    "/provider-profiles/:id/test",
+    {
+      schema: {
+        params: z.object({ id: z.string().min(1) }),
+        body: z.object({ acceptCharge: z.boolean().optional() }),
+        response: { 200: testResultSchema, 401: adminDeniedSchema, 404: notFoundSchema, 409: z.object({ ok: z.literal(false), reason: z.literal("charge-not-accepted") }) },
+      },
+    },
+    async (request, reply) => {
+      const profile = getProfile(request.params.id);
+      if (!profile) return reply.code(404).send({ ok: false as const, reason: "not-found" as const });
+      const check = (CONNECTION_CHECKS as Record<string, ConnectionCheck | undefined>)[profile.adapterType]!;
+      const { covers } = check;
+      const charged = check.chargedFor?.(profile.parameters) ?? check.charged;
+      let key: string;
+      try {
+        key = keyFor(profile.id);
+      } catch {
+        return { outcome: "no-key" as const, covers };
+      }
+      if (charged && request.body.acceptCharge !== true) return reply.code(409).send({ ok: false as const, reason: "charge-not-accepted" as const });
+      return { ...(await runConnectionCheck(profile.adapterType, profile.parameters, key)), covers };
+    },
+  );
+}

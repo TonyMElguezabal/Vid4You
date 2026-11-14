@@ -1,0 +1,2 @@
+# Known false positives in history, one finding each (fingerprint = commit:file:rule:line).
+# New findings in the same files are still reported. Add an entry only with a one-line reason above it.

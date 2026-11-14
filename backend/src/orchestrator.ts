@@ -1,0 +1,1943 @@
+import { randomUUID } from "node:crypto";
+import { EventEmitter } from "node:events";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import {
+  ArtefactAlreadyExistsError,
+  bindSceneImageProvider,
+  bindSceneVideoProvider,
+  commitSceneResult,
+  commitSceneVideoResult,
+  completeStageAttempt,
+  db,
+  getAllInFlightScenes,
+  getFinalVideoBuilds,
+  getAllVideoGeneratingScenes,
+  getImageCompleteScenesForRun,
+  getProviderRequest,
+  getNarrationTimestamps,
+  getRun,
+  getScene,
+  getSceneForRun,
+  getScenesForRun,
+  countProviderRequestsByScene,
+  clearFinalVideoRebuildRequest,
+  clearFinalVideoStale,
+  clearRunFailure,
+  correctImageInstruction,
+  correctLegacyInstruction,
+  correctVideoInstruction,
+  getInFlightAttempts,
+  getStageAttempts,
+  getSubmittedScenesForRun,
+  getVoiceOver,
+  getScenePauseEdits,
+  insertFinalVideoBuild,
+  insertProviderRequest,
+  isReadableMp4,
+  markChunkComplete,
+  markImageComplete,
+  markProviderRequestResolved,
+  markSceneFailed,
+  markSceneForManualRetry,
+  markSceneForManualVideoRetry,
+  markSceneInFlight,
+  claimImageSweep,
+  getSweepableImageFailureIds,
+  recordImageProviderRequestId,
+  markScenePendingRetry,
+  markSceneVideoRetry,
+  markVideoGenerating,
+  recordVideoRequestSent,
+  moveAssemblyOutput,
+  nextFinalVideoVersion,
+  PROJECTS_ROOT,
+  recordStageAttempt,
+  replaceFinalVideoPath,
+  resetAttemptsForVideoStart,
+  requestFinalVideoRebuild,
+  resolveArtefactPath,
+  sceneFileStem,
+  sceneCurrentRequestId,
+  setFinalVideoPath,
+  setRunFailure,
+  setRunPaused,
+  writeArtefact,
+  writeArtefactOnce,
+} from "./db.ts";
+import { activeProviderId } from "./activeProvider.ts";
+import { activeVideoDurations } from "./videoDurations.ts";
+import type { AssemblyTool, NarrationEdit } from "./assemblyTool.ts";
+import { buildAssemblySubtitles } from "./assemblySubtitles.ts";
+import { applyPauseEdits } from "./scenePause.ts";
+import { hasPendingPauseEdits, loadSessionPauses, scenePauseViews } from "./sessionPauses.ts";
+import * as concurrency from "./concurrency.ts";
+import { admitLaunch, launchHeldWork, registerStageLauncher, relaunchPendingWork, RESTART_CAUSE, sessionHeldWork, sessionRunningWork, settleAllInFlight, type SettleSummary, type StageLauncher } from "./launchGate.ts";
+import { describeProvider, diagnosticStageOf, type StageDiagnostic } from "./stageDiagnostics.ts";
+import { allowListVideoRequest, recordTaskCheck, videoRequestView } from "./videoRequestStatus.ts";
+import { assemblyGate } from "./assemblyGate.ts";
+import { retryDelaySeconds } from "./retry/retryPolicy.ts";
+import { getRetryDelayConfig } from "./retry/stageAttemptRecorder.ts";
+import * as provider from "./provider.ts";
+import { FINAL_OUTPUT, imageRequestBoundMs, imageTaskCeilingMs, videoTaskCeilingMs } from "./config/providers.ts";
+import { isAcceptedImageSize, readImageDimensions, sniffImageExtension } from "./imageOutputCheck.ts";
+import {
+  downloadGeneratedImage,
+  getImageProviderRegistry,
+  type ImageGenerationResult,
+  type ImageHandle,
+  type ImagePollResult,
+  type ImageProvider,
+  type ImageSubmitResult,
+  type ReferenceImage,
+} from "./imageProvider.ts";
+import {
+  downloadGeneratedClip,
+  getVideoProviderRegistry,
+  type VideoGenerationResult,
+  type VideoSubmitResult,
+} from "./videoProvider.ts";
+import {
+  STAGE,
+  STUB_PROVIDER_NAME,
+  type AttemptStage,
+  type NarrationInterval,
+  type Phase,
+  type PhaseProgress,
+  type PhaseStatus,
+  type ProviderOutcome,
+  type FinalVideoStatus,
+  type Run,
+  type Scene,
+  type SceneEventPayload,
+  type ScenePauseView,
+  type SessionFailure,
+  type SessionEventPayload,
+  type SessionSnapshot,
+  type SessionState,
+  type StageAttempt,
+} from "./types.ts";
+import { checkClip, type ClipCheckOutcome } from "./clipOutputCheck.ts";
+import { redactPaths } from "./util/redactPaths.ts";
+import { recordCaughtError } from "./telemetry/index.ts";
+
+/** 1 initial attempt + this many automatic retries, per PRD §10.1 (C2). */
+export const RETRY_BUDGET = 3;
+
+export const VIDEO_STAGE = "video";
+
+/** Poll interval between checks of the video provider (Decision 3). */
+let videoPollIntervalMs = 10_000;
+export function setVideoPollIntervalMs(ms: number): void {
+  videoPollIntervalMs = ms;
+}
+export function resetVideoPollIntervalMs(): void {
+  videoPollIntervalMs = 10_000;
+}
+
+/** follow-fal-image-queue (JOS-239), design Decision 3 — poll interval between checks of an image request at the provider. */
+let imagePollIntervalMs = 5_000;
+export function setImagePollIntervalMs(ms: number): void {
+  imagePollIntervalMs = ms;
+}
+export function resetImagePollIntervalMs(): void {
+  imagePollIntervalMs = 5_000;
+}
+
+/**
+ * How long `runVideoAttempt` waits (as a deferred setTimeout) before making
+ * any DB writes. 0 in production. Set to a large value in tests that only
+ * care about the image stage so the video stage never starts during the test.
+ */
+let videoStageStartDelayMs = 0;
+export function setVideoStageStartDelayMs(ms: number): void {
+  videoStageStartDelayMs = ms;
+}
+export function resetVideoStageStartDelayMs(): void {
+  videoStageStartDelayMs = 0;
+}
+
+export const events = new EventEmitter();
+
+// Test-only hook: fires synchronously after admission and before the in-flight
+// mark, to prove no pause can land between them (design Decision 2).
+let _postAdmitHook: ((runId: string) => void) | undefined;
+export function setPostAdmitHook(hook: ((runId: string) => void) | undefined): void {
+  _postAdmitHook = hook;
+}
+
+// ---- Wire contract helpers (define-live-updates, JOS-183 Decisions 2/4/8) ----
+
+/** rebuild-scene (JOS-235), Decision 4 — a rebuilt scene's media URLs change with its rebuild number, so the page loads the new file; the routes ignore the query. */
+const rebuildQuery = (scene: Pick<Scene, "rebuildCount">): string => (scene.rebuildCount > 0 ? `?r=${scene.rebuildCount}` : "");
+
+function sceneToPayload(scene: Scene, requestCounts: { image: number; video: number } | undefined): SceneEventPayload {
+  return {
+    type: "scene",
+    sessionId: scene.runId,
+    sceneId: scene.id,
+    index: scene.index,
+    state: scene.status,
+    // Decision 6 (JOS-146) — derived: a failed scene with a stored image path failed at the video stage.
+    affectedStage: scene.status === "failed" ? (scene.result ? "video" : "image") : undefined,
+    errorCause: scene.status === "failed" ? scene.lastError : undefined,
+    stages: sceneStageDiagnostics(scene, requestCounts),
+    videoRequest: videoRequestView(scene),
+    // show-scene-results-and-actions (JOS-151), Decision 3 — the route path,
+    // relative to the API base; the stored file path stays internal.
+    result: scene.result ? { imageUrl: `/sessions/${scene.runId}/scenes/${scene.id}/image${rebuildQuery(scene)}` } : undefined,
+    // download-scene-results (JOS-163), design Decision 3 — availability
+    // follows what is actually stored, built here next to `result`, so the
+    // page never derives it from `state`.
+    downloads:
+      scene.result || scene.videoResult
+        ? {
+            ...(scene.result ? { imageUrl: `/sessions/${scene.runId}/scenes/${scene.id}/download/image${rebuildQuery(scene)}` } : {}),
+            ...(scene.videoResult ? { clipUrl: `/sessions/${scene.runId}/scenes/${scene.id}/download/video${rebuildQuery(scene)}` } : {}),
+          }
+        : undefined,
+    instruction: scene.instruction,
+    prompt: scene.prompt,
+    imageInstruction: scene.imageInstruction,
+    videoInstruction: scene.videoInstruction,
+    narrationInterval: scene.narrationInterval ?? undefined,
+    requestedDurationSeconds: scene.requestedDurationSeconds ?? undefined,
+    durationWarning: scene.durationWarning ?? undefined,
+    speedFactor: scene.speedFactor ?? undefined,
+    speedFactorWarning: scene.speedFactorWarning ?? undefined,
+    updatedAt: scene.updatedAt,
+  };
+}
+
+/** What the session's records say about the phases before its chunks exist
+ * (obtain-narration-timestamps, JOS-139, Decision 8): state is derived from the
+ * records, never stored. JOS-136 (task 5.15) adds `voice-over-generating`. */
+export interface SessionProgress {
+  hasVoiceOver?: boolean;
+  /** A `voice-over` attempt is in flight (generate-voice-over, JOS-136, Decision 12). */
+  voiceAttemptInFlight?: boolean;
+  /** A `timestamps` attempt was recorded, or the timestamps are stored. */
+  timestampsStarted?: boolean;
+  /** adjust-scene-pause (JOS-190), Decision 7 — a rebuild attempt is running while a final video exists: the session is generating one again. */
+  rebuildInFlight?: boolean;
+  /** A final video exists (US-16b records it). Defaults to false: all scenes complete is `final-video-generating`, not `final-video`. */
+  hasFinalVideo?: boolean;
+  /** view-progress-by-phase (JOS-168), Decision 5: the failed phase has an attempt in flight that was queued no earlier than the recorded failure. */
+  retryInFlight?: boolean;
+}
+
+export interface DerivedSessionState {
+  state: SessionState;
+  failedPhase?: string;
+  /** Present only when `failedPhase` is `"scenes"`: the failed scenes' indexes, ascending. */
+  failedSceneIndexes?: number[];
+}
+
+/** Derives the session state from its scenes, its recorded failure and its
+ * progress — PRD §8.1. A session with no chunks and a failure (a refused
+ * decomposition, assign-scene-identifiers Decision 6) is `failed` in that phase;
+ * without a failure, the timestamps stage means `chunk-decomposing`, a
+ * completed narration `voice-over-complete` and a voice attempt in flight
+ * `voice-over-generating` (generate-voice-over, JOS-136, Decision 12). */
+/** The in-progress state of a failed phase that is being retried (PRD §8.1). */
+const RETRY_STATE: Record<SessionFailure["phase"], SessionState> = {
+  "voice-over": "voice-over-generating",
+  decomposition: "chunk-decomposing",
+  // retry-final-assembly (JOS-159), design Decision 5 — unreachable through this zero-scenes branch (assembly
+  // only runs once scenes exist), kept for the Record's type completeness and consistency with the real value.
+  assembly: "final-video-generating",
+};
+
+/** The attempt stage whose in-flight attempt means the failed phase is being retried. */
+const RETRY_ATTEMPT_STAGE: Record<SessionFailure["phase"], AttemptStage> = {
+  "voice-over": "voice-over",
+  decomposition: "timestamps",
+  assembly: "assembly",
+};
+
+function isRetryInFlight(runId: string, failure: SessionFailure | null): boolean {
+  if (!failure) return false;
+  const latest = getStageAttempts(runId, RETRY_ATTEMPT_STAGE[failure.phase]).at(-1);
+  return latest !== undefined && latest.outcome === "in-flight" && latest.queuedAt >= failure.occurredAt;
+}
+
+export function deriveSessionState(
+  scenes: Scene[],
+  failure: SessionFailure | null = null,
+  progress: SessionProgress = {},
+): DerivedSessionState {
+  if (scenes.length === 0) {
+    if (failure && progress.retryInFlight) return { state: RETRY_STATE[failure.phase] };
+    if (failure) return { state: "failed", failedPhase: failure.phase };
+    if (progress.timestampsStarted) return { state: "chunk-decomposing" };
+    if (progress.hasVoiceOver) return { state: "voice-over-complete" };
+    if (progress.voiceAttemptInFlight) return { state: "voice-over-generating" };
+    return { state: "submitted" };
+  }
+  // gate-assembly-on-complete-scenes (JOS-150), design Decisions 2-4 — PRD §8.1
+  // v1.3: a scene still generating (anything but chunk-complete or failed) keeps
+  // the session in `chunks-processing`, even beside a failed scene.
+  const gate = assemblyGate(scenes);
+  if (gate.open) {
+    // retry-final-assembly (JOS-159), design Decision 1 — mirrors the zero-scenes branch's own
+    // `if (failure && progress.retryInFlight) … else if (failure) …` pattern one-for-one.
+    if (failure?.phase === "assembly" && !progress.retryInFlight) return { state: "failed", failedPhase: "assembly" };
+    return { state: progress.hasFinalVideo && !progress.rebuildInFlight ? "final-video" : "final-video-generating" };
+  }
+  if (gate.processingSceneIndexes.length > 0) return { state: "chunks-processing" };
+  return { state: "failed", failedPhase: "scenes", failedSceneIndexes: gate.failedSceneIndexes };
+}
+
+const PHASES: readonly Phase[] = ["voice-over", "decomposition", "scenes", "assembly"];
+
+/** For each non-failed state: how many leading phases are complete, and whether the next one is in progress. */
+const PROGRESS_BY_STATE: Record<Exclude<SessionState, "failed">, { completePhases: number; nextInProgress: boolean }> = {
+  submitted: { completePhases: 0, nextInProgress: false },
+  "voice-over-generating": { completePhases: 0, nextInProgress: true },
+  "voice-over-complete": { completePhases: 1, nextInProgress: false },
+  "chunk-decomposing": { completePhases: 1, nextInProgress: true },
+  "chunks-processing": { completePhases: 2, nextInProgress: true },
+  "final-video-generating": { completePhases: 3, nextInProgress: true },
+  "final-video": { completePhases: 4, nextInProgress: false },
+};
+
+const STAGE_PHASE: Record<string, Phase> = {
+  "voice-over": "voice-over",
+  decomposition: "decomposition",
+  image: "scenes",
+  video: "scenes",
+  assembly: "assembly",
+};
+
+/**
+ * see-provider-and-attempts (JOS-166) Decisions 1 and 5 — a scene's stages that have run. A stage is listed once it has
+ * at least one recorded attempt, so a scene holding the placeholder provider and no request lists nothing.
+ */
+function sceneStageDiagnostics(scene: Scene, requestCounts: { image: number; video: number } | undefined): { image?: StageDiagnostic; video?: StageDiagnostic } {
+  const stages: { image?: StageDiagnostic; video?: StageDiagnostic } = {};
+  if (requestCounts && requestCounts.image > 0) stages.image = { stage: "image", provider: describeProvider("image", scene.provider), attempts: requestCounts.image };
+  // show-video-request-status (JOS-200) — a request's record is written when it ends, so one in flight is counted from its status.
+  const videoAttempts = (requestCounts?.video ?? 0) + (scene.status === "video-generating" ? 1 : 0);
+  if (videoAttempts > 0) stages.video = { stage: "video", provider: describeProvider("video", scene.videoProvider), attempts: videoAttempts };
+  return stages;
+}
+
+/** The stored attempt stages each phase shows, in pipeline order (the scenes phase has no session-level stage). */
+const SESSION_STAGES_OF_PHASE: Record<Phase, AttemptStage[]> = {
+  "voice-over": ["voice-over"],
+  decomposition: ["timestamps", "decomposition"],
+  scenes: [],
+  assembly: ["assembly"],
+};
+
+/** A phase's session-level stages that have run: all their attempts counted, the provider of the latest one shown. */
+function phaseStageDiagnostics(runId: string, phase: Phase): StageDiagnostic[] {
+  const diagnostics: StageDiagnostic[] = [];
+  for (const stage of SESSION_STAGES_OF_PHASE[phase]) {
+    const attempts = getStageAttempts(runId, stage);
+    const latest = attempts.at(-1);
+    if (!latest) continue;
+    const shown = diagnosticStageOf(stage);
+    diagnostics.push({ stage: shown, provider: describeProvider(shown, latest.providerId), attempts: attempts.length });
+  }
+  return diagnostics;
+}
+
+/** view-progress-by-phase (JOS-168), design Decisions 1-4 — the four phases in
+ * pipeline order, derived from the session state alone so the header and the
+ * sections cannot disagree. Throws when a failed session names no known phase,
+ * since PRD §8.1 requires one. */
+export function derivePhaseProgress(input: {
+  state: SessionState;
+  failedPhase?: string;
+  failure?: { phase: string; cause: string; retryable: boolean } | null;
+  held: ReadonlyArray<{ stage: string; count: number }>;
+}): Array<Omit<PhaseProgress, "stages">> {
+  const { state, failedPhase, failure, held } = input;
+  let completePhases: number;
+  let activeStatus: PhaseStatus | undefined;
+  if (state === "failed") {
+    completePhases = PHASES.findIndex((phase) => phase === failedPhase);
+    if (completePhases === -1) throw new Error(`a failed session must carry a failedPhase naming one of ${PHASES.join(", ")}; got ${String(failedPhase)}`);
+    activeStatus = "failed";
+  } else {
+    const progress = PROGRESS_BY_STATE[state];
+    completePhases = progress.completePhases;
+    activeStatus = progress.nextInProgress ? "in-progress" : undefined;
+  }
+
+  return PHASES.map((phase, index): Omit<PhaseProgress, "stages"> => {
+    let status: PhaseStatus = "pending";
+    if (index < completePhases) status = "complete";
+    else if (index === completePhases && activeStatus) status = activeStatus;
+
+    const heldCount = held.reduce((sum, entry) => (STAGE_PHASE[entry.stage] === phase ? sum + entry.count : sum), 0);
+    const entry: Omit<PhaseProgress, "stages"> = { phase, status, heldCount };
+    if (status === "failed" && phase !== "scenes" && failure && failure.phase === phase) entry.failure = { cause: failure.cause, retryable: failure.retryable };
+    return entry;
+  });
+}
+
+/**
+ * adjust-scene-pause (JOS-190), Decision 9 — where the current final video sits in its history, whether the User's
+ * pause edits differ from what it was built with, and why the latest rebuild failed (derived from its attempt, never
+ * stored: a failed rebuild is not the session's failure, Decision 6).
+ */
+function finalVideoStatus(runId: string, finalVideoPath: string, staleScenes: boolean): FinalVideoStatus {
+  const builds = getFinalVideoBuilds(runId);
+  const status: FinalVideoStatus = {
+    version: builds.at(-1)?.version ?? 1,
+    pendingPauseEdits: hasPendingPauseEdits(runId),
+    staleScenes,
+  };
+  const latest = getStageAttempts(runId, "assembly").at(-1);
+  const failed = latest !== undefined && (latest.outcome === "transient" || latest.outcome === "not-retryable");
+  if (failed && finalVideoPath) {
+    const reason = latest.errorMessage ?? "an unknown error";
+    status.rebuildFailure = {
+      cause: `The new version could not be built: ${redactPaths(reason)}. Your current final video (version ${status.version}) is kept.`,
+    };
+  }
+  return status;
+}
+
+export function toSnapshot(runId: string): SessionSnapshot | undefined {
+  const run = getRun(runId);
+  if (!run) return undefined;
+  const scenes = getScenesForRun(runId);
+  const { state, failedPhase, failedSceneIndexes } = deriveSessionState(scenes, run.failure, {
+    hasVoiceOver: getVoiceOver(runId) !== undefined,
+    // retry-voice-over (JOS-155), Decision 7 — `startNewCycle` clears the failure, so a retry that is accepted but not yet
+    // sent (scheduled, or held by a pause) must already show the phase as running.
+    voiceAttemptInFlight: getStageAttempts(runId, "voice-over").some((attempt) => attempt.outcome === "in-flight" || attempt.outcome === "scheduled"),
+    timestampsStarted: getStageAttempts(runId, "timestamps").length > 0 || getNarrationTimestamps(runId) !== undefined,
+    hasFinalVideo: run.finalVideoPath != null,
+    rebuildInFlight: run.finalVideoPath != null && getStageAttempts(runId, "assembly").some((attempt) => attempt.outcome === "in-flight"),
+    retryInFlight: isRetryInFlight(runId, run.failure),
+  });
+  const voiceOver = getVoiceOver(runId);
+  const heldWork = sessionHeldWork(runId);
+  const heldSceneIds = heldWork.sceneIds;
+  const runningWork = sessionRunningWork(runId);
+  const requestCounts = countProviderRequestsByScene(runId);
+  const session: SessionEventPayload = {
+    type: "session",
+    sessionId: run.id,
+    title: run.title,
+    script: run.script,
+    language: run.language,
+    state,
+    paused: run.paused,
+    held: heldWork.stages.map((s) => ({ stage: s.stage, count: s.count })),
+    running: runningWork.map((s) => ({ stage: s.stage, count: s.count })),
+    failedPhase,
+    failedSceneIndexes,
+    voiceOver: voiceOver
+      ? {
+          provider: run.voiceProviderId ?? "unknown",
+          durationSeconds: voiceOver.durationSeconds,
+          nativeTimestampsAvailable: voiceOver.nativeTimestampsAvailable,
+          completedAt: voiceOver.completedAt,
+        }
+      : undefined,
+    failure: state === "failed" && run.failure ? { ...run.failure } : undefined,
+    phases: derivePhaseProgress({ state, failedPhase, failure: run.failure, held: heldWork.stages }).map((entry) => ({
+      ...entry,
+      stages: phaseStageDiagnostics(runId, entry.phase),
+    })),
+    createdAt: run.createdAt,
+    updatedAt: new Date().toISOString(),
+    finalVideoUrl: run.finalVideoPath != null ? `/sessions/${run.id}/download/final-video` : undefined,
+    finalVideo: run.finalVideoPath != null ? finalVideoStatus(runId, run.finalVideoPath, run.finalVideoStale) : undefined,
+  };
+  // adjust-scene-pause (JOS-190), Decision 9 — each scene's dial, only once there is a final video to rebuild.
+  const pauseViews = run.finalVideoPath != null ? scenePauseViews(runId) : new Map<string, ScenePauseView>();
+  return {
+    session,
+    scenes: scenes.map((s) => ({
+      ...sceneToPayload(s, requestCounts.get(s.id)),
+      held: heldSceneIds.has(s.id) || undefined,
+      pause: pauseViews.get(s.id),
+    })),
+  };
+}
+
+/**
+ * follow-fal-image-queue (JOS-239), design Decision 7 — the one-time end-of-session sweep: once no scene of the session
+ * is waiting or generating, each image failure a retry can fix gets one new retry cycle, as after "Retry scene". It
+ * runs from `broadcast`, which every settle and every continue goes through, before the snapshot is built, so the
+ * session is never published as failed while the sweep is due.
+ */
+function sweepIdleImageFailures(runId: string): void {
+  const sceneIds = getSweepableImageFailureIds(runId); // empty once swept
+  if (sceneIds.length === 0 || !admitLaunch(runId).admitted) return;
+  const gate = assemblyGate(getScenesForRun(runId));
+  if (gate.open || gate.processingSceneIndexes.length > 0) return;
+  if (!claimImageSweep(runId)) return;
+  for (const sceneId of sceneIds) manualRetry(runId, sceneId);
+}
+
+export function broadcast(runId: string): void {
+  sweepIdleImageFailures(runId);
+  const snapshot = toSnapshot(runId);
+  if (snapshot) events.emit("state", snapshot);
+}
+
+/** In-memory only, for the idempotency experiment/test: counts how many times
+ * a scene's success has triggered "the next stage" (here, just a counter —
+ * the skeleton has one stage). A duplicate provider delivery must never move
+ * this past 1. */
+const nextStageLaunches = new Map<string, number>();
+export function nextStageLaunchCount(sceneId: string): number {
+  return nextStageLaunches.get(sceneId) ?? 0;
+}
+
+/** Same idempotency guard for the video stage (JOS-146). */
+const nextVideoStageLaunches = new Map<string, number>();
+export function nextVideoStageLaunchCount(sceneId: string): number {
+  return nextVideoStageLaunches.get(sceneId) ?? 0;
+}
+
+/**
+ * retry-or-correct-image (JOS-157), design Decision 4 — the one predicate `launchSceneStage`'s dispatch and a
+ * correction's target-column choice both read, so the two can never disagree about which scenes are "real"
+ * chunks (routed through the image provider) versus skeleton scenes (routed through the stub, with their
+ * legacy `instruction` as the correctable field).
+ */
+function hasImageInstruction(scene: Pick<Scene, "imageInstruction">): boolean {
+  return Boolean(scene.imageInstruction);
+}
+
+/** Dispatches to the real image stage or the stub stage depending on whether the scene has an IMAGE instruction. */
+export function launchSceneStage(sceneId: string): void {
+  const scene = getScene(sceneId);
+  if (scene && hasImageInstruction(scene)) {
+    launchImageStage(sceneId);
+  } else {
+    launchScene(sceneId);
+  }
+}
+
+// ---- Assembly launch gate (assemble-final-video, JOS-149) ----
+
+/** Per-session assembly launch counter (test observable, like nextVideoStageLaunchCount). */
+const assemblyLaunches = new Map<string, number>();
+export function nextAssemblyLaunchCount(runId: string): number {
+  return assemblyLaunches.get(runId) ?? 0;
+}
+/** Test-only: reset counters without clearing the full store. */
+export function resetAssemblyLaunchCount(): void {
+  assemblyLaunches.clear();
+}
+
+// ---- Assembly tool registry ----
+
+let _assemblyTool: AssemblyTool | undefined;
+
+/** Set the AssemblyTool adapter (use the stub in tests, the ffmpeg adapter in production). */
+export function setAssemblyTool(tool: AssemblyTool): void {
+  _assemblyTool = tool;
+}
+
+/** Reset to undefined (test teardown). */
+export function resetAssemblyTool(): void {
+  _assemblyTool = undefined;
+}
+
+/** The registered AssemblyTool, or undefined while none is configured. */
+export function getAssemblyTool(): AssemblyTool | undefined {
+  return _assemblyTool;
+}
+
+
+/** retry-final-assembly (JOS-159), design Decision 1 — the one place an assembly failure is written, from either
+ * a completed attempt (`attempt` carries its real `cycle`/`sequenceInCycle`) or a pre-attempt refusal (no tool, no
+ * voice-over, a missing clip — `cycle: 1, attemptsInCycle: 0`, always `retryable: false`). */
+function recordAssemblyFailure(
+  runId: string,
+  detail: string,
+  retryable: boolean,
+  attempt: { cycle: number; sequenceInCycle: number } | null,
+): void {
+  setRunFailure(runId, {
+    phase: "assembly",
+    cause: `The final video could not be assembled: ${redactPaths(detail)}. Your narration, images and clips are kept.`,
+    retryable,
+    manualRetryAvailable: true,
+    cycle: attempt?.cycle ?? 1,
+    attemptsInCycle: attempt?.sequenceInCycle ?? 0,
+    occurredAt: new Date().toISOString(),
+  });
+}
+
+/**
+ * adjust-scene-pause (JOS-190), Decision 6 — a rebuild that cannot even start (no tool, no stored narration, unreadable
+ * timestamps). Recorded as a failed assembly attempt of its own cycle, so the read can say why, and never as the
+ * session's failure: the previous final video is still the session's final video.
+ */
+function refuseRebuild(runId: string, detail: string): void {
+  const now = new Date().toISOString();
+  const attempt = recordStageAttempt({
+    runId,
+    stage: "assembly",
+    providerId: null,
+    queuedAt: now,
+    sentAt: now,
+    cycle: (getStageAttempts(runId, "assembly").at(-1)?.cycle ?? 0) + 1,
+  });
+  completeStageAttempt(attempt.id, { outcome: "not-retryable", finishedAt: now, errorMessage: redactPaths(detail) });
+  clearFinalVideoRebuildRequest(runId);
+  broadcast(runId);
+}
+
+/**
+ * Runs one assembly attempt; retries on transient failure up to RETRY_BUDGET. A manual retry (`assemblyRetry.ts`)
+ * goes through this same function via `assemblyStageLauncher.launch`/`launchAssemblyPhase`, exactly like a first
+ * run — it records its own fresh `stage_attempts` row and gets a full new budget (`attemptNumber` starts at 1
+ * again), rather than resuming any earlier attempt.
+ */
+async function runAssemblyAttempt(runId: string, attemptNumber: number): Promise<void> {
+  const run = getRun(runId);
+  if (!run) return;
+  if (!admitLaunch(runId).admitted) return;
+  // ignore-repeated-success-confirmations (JOS-161), design Decision 3 — no assembly for a session that already has its
+  // final video, or while one is in flight. No await precedes the attempt record below, so this check and the record
+  // cannot interleave with another launch.
+  // adjust-scene-pause (JOS-190), design Decision 6 — a rebuild is a requested assembly of a session that already has a
+  // final video; it is the only reason this function may run when one is recorded.
+  const rebuild = run.finalVideoPath !== null && run.rebuildRequestedAt !== null;
+  if ((run.finalVideoPath && !rebuild) || getStageAttempts(runId, "assembly").some((attempt) => attempt.outcome === "in-flight")) {
+    return;
+  }
+
+  // retry-final-assembly (JOS-159), design Decision 2 — adopt a final-video.mp4 already on disk with no recorded
+  // path (e.g. a crash between an earlier attempt's move and its database write) instead of generating a duplicate.
+  const finalPath = resolveArtefactPath(run.projectFolder, "final-video.mp4");
+  if (!rebuild && existsSync(finalPath) && isReadableMp4(finalPath)) {
+    setFinalVideoPath(runId, "final-video.mp4");
+    clearRunFailure(runId);
+    broadcast(runId);
+    return;
+  }
+
+  const tool = getAssemblyTool();
+  if (!tool) {
+    if (rebuild) return refuseRebuild(runId, "no assembly tool is configured");
+    recordAssemblyFailure(runId, "no assembly tool is configured", false, null);
+    broadcast(runId);
+    return;
+  }
+
+  const voiceOver = getVoiceOver(runId);
+  if (!voiceOver) {
+    if (rebuild) return refuseRebuild(runId, "the session has no stored voice-over");
+    recordAssemblyFailure(runId, "the session has no stored voice-over", false, null);
+    broadcast(runId);
+    return;
+  }
+
+  const scenes = getScenesForRun(runId).sort((a, b) => a.index - b.index);
+
+  // adjust-scene-pause (JOS-190), Decisions 4 and 6 — the edits are snapshotted once, here, and applied as shifted
+  // intervals; the stored intervals are read, never written. No edits (or a first assembly): the stored ones.
+  let intervalOf = (scene: Scene): NarrationInterval => scene.narrationInterval!;
+  let appliedEdits: ReadonlyMap<string, number> = new Map();
+  let narrationEdits: NarrationEdit[] = [];
+  if (rebuild) {
+    const session = loadSessionPauses(runId);
+    if (!session) return refuseRebuild(runId, "the narration's timestamps could not be read to apply the pause edits");
+    appliedEdits = getScenePauseEdits(runId);
+    const edited = applyPauseEdits(session.scenes, appliedEdits, session.voiceOverDurationSeconds);
+    intervalOf = (scene) => edited.intervals.get(scene.id) ?? scene.narrationInterval!;
+    narrationEdits = edited.edits;
+  }
+  // design Decision 1 — no eager existsSync check for a missing clip file here: many existing tests complete a
+  // scene's clip at the store level only (e.g. `deliverClipSuccessForTests`), with no real file, by design. A
+  // genuinely missing or unreadable clip file surfaces the same way any other tool failure does: the real ffmpeg
+  // adapter throws, the generic catch below turns it into a transient failure, and it is recorded after the
+  // normal retry budget — simpler than a special-cased pre-check, and does not require every caller to simulate
+  // a real file just to reach this stage.
+
+  const fps = FINAL_OUTPUT.fps;
+
+  // Build cumulative frame geometry (ADR 0005, Decision 4).
+  let prevEndFrame = 0;
+  const clips = scenes.map((scene) => {
+    const interval = intervalOf(scene);
+    const cumEndFrame = Math.round(interval.endSeconds * fps);
+    const frameCount = cumEndFrame - prevEndFrame;
+    prevEndFrame = cumEndFrame;
+    return {
+      clipPath: resolveArtefactPath(run.projectFolder, scene.videoResult!),
+      narrationStartSeconds: interval.startSeconds,
+      narrationDurationSeconds: interval.endSeconds - interval.startSeconds,
+      cumulativeStartFrame: cumEndFrame - frameCount,
+      frameCount,
+    };
+  });
+
+  // add-burned-in-subtitles (JOS-237), Decision 3 — the cues follow the same pause edits as the narration and end with
+  // the video, whose length is where the last clip ends.
+  const subtitles = buildAssemblySubtitles(runId, narrationEdits, prevEndFrame / fps);
+
+  // design Decision 2 — a per-attempt temp directory under PROJECTS_ROOT (same filesystem as every project
+  // folder in this app, unconditionally), so the move on success is always a same-device hard link.
+  const work = mkdtempSync(join(PROJECTS_ROOT, ".assembly-tmp-"));
+  const tempOutputPath = join(work, "final-video.mp4");
+  const now = new Date().toISOString();
+
+  // attemptNumber === 1 means a fresh cycle is starting (a first run, or a manual retry — design Decision 3):
+  // give it the next cycle number explicitly, since `recordStageAttempt`'s own default (no cycle given) reuses
+  // the stage instance's current MAX(cycle), which would overflow the just-exhausted cycle's own attempt cap.
+  // Every later attempt within the same cycle (attemptNumber > 1, automatic or restart-continued) keeps the default.
+  const attempt = recordStageAttempt({
+    runId,
+    stage: "assembly",
+    providerId: null,
+    queuedAt: now,
+    sentAt: now,
+    ...(attemptNumber === 1 ? { cycle: (getStageAttempts(runId, "assembly").at(-1)?.cycle ?? 0) + 1 } : {}),
+  });
+  const attemptId = attempt.id;
+
+  let result;
+  try {
+    result = await tool.assemble({
+      clips,
+      voiceOverPath: resolveArtefactPath(run.projectFolder, voiceOver.audioPath),
+      outputPath: tempOutputPath,
+      fps: FINAL_OUTPUT.fps,
+      width: FINAL_OUTPUT.width,
+      height: FINAL_OUTPUT.height,
+      ...(narrationEdits.length > 0 ? { narrationEdits } : {}),
+      subtitles,
+    });
+  } catch (err: unknown) {
+    result = { kind: "failed_transient" as const, reason: err instanceof Error ? err.message : String(err) };
+  }
+
+  const finishedAt = new Date().toISOString();
+
+  if (result.kind === "success" && rebuild) {
+    // adjust-scene-pause (JOS-190), Decision 6 — a new versioned file next to the old one, then its record, then the
+    // compare-and-set of the current path; whichever of the three is refused discards this result as superseded.
+    const version = nextFinalVideoVersion(runId);
+    const fileName = `final-video-${version}.mp4`;
+    const moved = moveAssemblyOutput(run.projectFolder, tempOutputPath, fileName);
+    rmSync(work, { recursive: true, force: true });
+    const recorded =
+      moved &&
+      insertFinalVideoBuild({ runId, version, path: fileName, pauses: Object.fromEntries(appliedEdits), createdAt: finishedAt }) &&
+      replaceFinalVideoPath(runId, run.finalVideoPath!, fileName);
+    completeStageAttempt(attemptId, recorded ? { outcome: "success", finishedAt } : { outcome: "superseded", finishedAt });
+    // rebuild-scene (JOS-235), Decision 5 — the new version was built from every scene's current clip.
+    if (recorded) clearFinalVideoStale(runId);
+    clearFinalVideoRebuildRequest(runId);
+    broadcast(runId);
+    return;
+  }
+
+  if (result.kind === "success") {
+    // A refused move/write means another assembly recorded the final video first: this result is discarded (JOS-161, Decision 2).
+    const moved = moveAssemblyOutput(run.projectFolder, tempOutputPath, "final-video.mp4");
+    rmSync(work, { recursive: true, force: true });
+    const recorded = moved && setFinalVideoPath(runId, "final-video.mp4");
+    completeStageAttempt(attemptId, recorded ? { outcome: "success", finishedAt } : { outcome: "superseded", finishedAt });
+    if (recorded) clearRunFailure(runId);
+    broadcast(runId);
+    return;
+  }
+
+  rmSync(work, { recursive: true, force: true });
+
+  if (result.kind === "failed_not_retryable") {
+    completeStageAttempt(attemptId, { outcome: "not-retryable", finishedAt, errorMessage: result.reason });
+    // A failed rebuild never becomes the session's failure: the previous final video is still there (Decision 6).
+    if (rebuild) clearFinalVideoRebuildRequest(runId);
+    else recordAssemblyFailure(runId, result.reason, false, attempt);
+    broadcast(runId);
+    return;
+  }
+
+  // Transient failure — retry if budget remains.
+  completeStageAttempt(attemptId, { outcome: "transient", finishedAt, errorMessage: result.reason });
+  if (attemptNumber >= 1 + RETRY_BUDGET) {
+    if (rebuild) clearFinalVideoRebuildRequest(runId);
+    else recordAssemblyFailure(runId, result.reason, true, attempt);
+    broadcast(runId);
+    return;
+  }
+  void runAssemblyAttempt(runId, attemptNumber + 1);
+}
+
+/** The attempt that was lost with the process, when the latest assembly attempt was settled by a restart; null otherwise. */
+function restartSettledAssemblyAttempt(runId: string): StageAttempt | null {
+  const latest = getStageAttempts(runId, "assembly").at(-1);
+  return latest?.outcome === "transient" && latest.errorMessage === RESTART_CAUSE ? latest : null;
+}
+
+function launchAssemblyPhase(runId: string): void {
+  if (!admitLaunch(runId).admitted) return;
+  assemblyLaunches.set(runId, (assemblyLaunches.get(runId) ?? 0) + 1);
+  // A launch after a restart continues the attempt sequence the lost attempt belonged to, so its budget is not reset.
+  // A rebuild is the User's explicit request and always opens a fresh cycle (adjust-scene-pause, JOS-190, Decision 6).
+  const rebuild = getRun(runId)?.rebuildRequestedAt != null;
+  void runAssemblyAttempt(runId, rebuild ? 1 : (restartSettledAssemblyAttempt(runId)?.sequenceInCycle ?? 0) + 1);
+}
+
+/** Called after every chunk reaches chunk-complete or failed; launches assembly
+ * when the gate is open and the session is not paused (design.md Decision 1). */
+function triggerAssemblyIfReady(runId: string): void {
+  const admit = admitLaunch(runId);
+  if (!admit.admitted) return;
+  const scenes = getScenesForRun(runId);
+  const gate = assemblyGate(scenes);
+  if (!gate.open) return;
+  // rebuild-scene (JOS-235), Decision 6 — a session whose final video predates a rebuilt scene gets a new version, the
+  // JOS-190 rebuild: a fresh cycle, the stored pause edits, and the previous version kept until the new one succeeds.
+  // Any other session (first assembly, or one whose assembly failed) takes the normal path.
+  // A rebuild the User asked for (`rebuildFinalVideo` records it first) is already requested and just launches.
+  const run = getRun(runId);
+  if (run?.finalVideoPath && run.finalVideoStale && !run.rebuildRequestedAt && !requestFinalVideoRebuild(runId)) return;
+  launchAssemblyPhase(runId);
+}
+
+/**
+ * Launches a scene's next attempt, honouring a session-wide pause (PRD §9):
+ * a not-yet-launched generation is held until `continueSession` is called.
+ * Already-sent requests are unaffected by pause — this function is simply
+ * never called for them again until they resolve.
+ */
+export function launchScene(sceneId: string): void {
+  const scene = getScene(sceneId);
+  if (!scene || scene.status !== "submitted") return;
+  if (!admitLaunch(scene.runId).admitted) return; // held; continueSession() launches it later
+
+  concurrency.acquire(STAGE, sceneId, () => {
+    const fresh = getScene(sceneId);
+    if (!fresh || fresh.status !== "submitted") return;
+    if (!admitLaunch(fresh.runId).admitted) {
+      // Paused while queued: give the slot to the next waiter without
+      // sending anything. No attempt is consumed (design Decision 2).
+      concurrency.release(STAGE, sceneId);
+      return;
+    }
+    _postAdmitHook?.(fresh.runId);
+    const attemptNumber = fresh.attempts + 1;
+    const requestId = provider.send(
+      fresh.id,
+      attemptNumber,
+      fresh.providerMode,
+      fresh.providerLatencyMs,
+      (reqId) => handleProviderResult(reqId),
+    );
+    markSceneInFlight(fresh.id, requestId, attemptNumber);
+    broadcast(fresh.runId);
+  });
+}
+
+/**
+ * generate-chunk-image (JOS-145), design Decision 6 — the real image stage.
+ * Shares `launchScene`'s guards and pause handling, but calls the bound
+ * adapter with a single `await`: Fal.ai's call has nothing to poll after it
+ * returns, unlike `provider.ts`'s stub simulation. Not awaited by its own
+ * callers (design Decision 7): a caller observes progress through
+ * `broadcast`, the same as every other launch in this module.
+ */
+export function launchImageStage(sceneId: string): void {
+  const scene = getScene(sceneId);
+  if (!scene || scene.status !== "submitted") return;
+  if (!admitLaunch(scene.runId).admitted) return; // held; continueSession() launches it later
+
+  concurrency.acquire(STAGE, sceneId, () => {
+    void runImageAttempt(sceneId);
+  });
+}
+
+/** Launches every chunk a run's decomposition just registered (AC1) — `continueSession`'s loop, at registration time. */
+export function launchImageStageForRun(runId: string): void {
+  for (const scene of getSubmittedScenesForRun(runId)) {
+    launchImageStage(scene.id);
+  }
+}
+
+export const imageStageLauncher: StageLauncher = {
+  stage: "image",
+  heldWork: (sessionId: string) => {
+    const scenes = getSubmittedScenesForRun(sessionId);
+    return { count: scenes.length, sceneIds: scenes.map((s) => s.id) };
+  },
+  settleInFlight: settleImageInFlight,
+  launch: (sessionId: string) => {
+    for (const scene of getSubmittedScenesForRun(sessionId)) {
+      launchSceneStage(scene.id);
+    }
+  },
+};
+
+registerStageLauncher(imageStageLauncher);
+
+// ---- Video stage (generate-chunk-video, JOS-146) ----
+
+/**
+ * check-generated-clip (JOS-265), design Decisions 3-4 — every clip is measured from its own bytes before it is stored.
+ * Replaceable, like the assembly tool: `test/setup.ts` installs an accepting check so tests that deliver placeholder
+ * bytes keep testing what they test; a test of the check installs the real one.
+ */
+let clipCheck: (bytes: Uint8Array, requestedSeconds: number) => Promise<ClipCheckOutcome> = (bytes, requestedSeconds) => checkClip(bytes, requestedSeconds);
+export function setClipCheck(check: typeof clipCheck): void {
+  clipCheck = check;
+}
+export function resetClipCheck(): void {
+  clipCheck = (bytes, requestedSeconds) => checkClip(bytes, requestedSeconds);
+}
+
+function applyVideoFailureOutcome(
+  sceneId: string,
+  outcome: { kind: "failed_transient" | "failed_not_retryable"; reason: string },
+  attemptNumber: number,
+): void {
+  if (outcome.kind === "failed_not_retryable") {
+    markSceneFailed(sceneId, outcome.reason);
+    return;
+  }
+  if (attemptNumber >= 1 + RETRY_BUDGET) {
+    markSceneFailed(sceneId, `${outcome.reason} (video retry budget exhausted after ${attemptNumber} attempts)`);
+    return;
+  }
+  markSceneVideoRetry(sceneId, outcome.reason);
+  launchVideoStage(sceneId);
+}
+
+function completeVideoStage(sceneId: string, relativePath: string): void {
+  const committed = commitSceneVideoResult(sceneId, relativePath);
+  if (committed) {
+    markChunkComplete(sceneId, relativePath);
+    nextVideoStageLaunches.set(sceneId, (nextVideoStageLaunches.get(sceneId) ?? 0) + 1);
+    const scene = getScene(sceneId);
+    if (scene) triggerAssemblyIfReady(scene.runId);
+  }
+}
+
+/** Test-only (repeated-success-confirmations, design Decision 4): delivers a clip success to the stage's own success path. */
+export function deliverClipSuccessForTests(sceneId: string, relativePath: string): void {
+  completeVideoStage(sceneId, relativePath);
+}
+
+async function pollVideoRequestOnce(
+  sceneId: string,
+  requestId: string,
+  attemptNumber: number,
+  sentAtMs: number,
+): Promise<void> {
+  const fresh = getScene(sceneId);
+  if (!fresh || fresh.status !== "video-generating") {
+    concurrency.release(VIDEO_STAGE, sceneId);
+    return;
+  }
+  if (!fresh.videoProvider) {
+    concurrency.release(VIDEO_STAGE, sceneId);
+    return;
+  }
+  const adapter = getVideoProviderRegistry().adapters[fresh.videoProvider];
+  if (!adapter) {
+    insertProviderRequest(requestId, sceneId, 0, "not_retryable_failure", attemptNumber, "video");
+    markProviderRequestResolved(requestId);
+    concurrency.release(VIDEO_STAGE, sceneId);
+    applyVideoFailureOutcome(sceneId, { kind: "failed_not_retryable", reason: `no adapter for the bound video provider '${fresh.videoProvider}'` }, attemptNumber);
+    broadcast(fresh.runId);
+    return;
+  }
+
+  let pollResult: VideoGenerationResult;
+  try {
+    pollResult = await adapter.poll(requestId);
+  } catch {
+    pollResult = { kind: "failed_transient", reason: "the video provider threw during polling" };
+  }
+
+  if (pollResult.kind === "pending") {
+    // keep-clip-task-on-timeout (JOS-204), design Decisions 1-2 — past the video limit the same task keeps being followed;
+    // only the ceiling (twice the limit, from the original send) ends the wait, and it ends it without a new task.
+    const ceilingMs = videoTaskCeilingMs();
+    const elapsedMs = Date.now() - sentAtMs;
+    if (ceilingMs !== undefined && elapsedMs > ceilingMs) {
+      insertProviderRequest(requestId, sceneId, elapsedMs, "not_retryable_failure", attemptNumber, "video");
+      markProviderRequestResolved(requestId);
+      concurrency.release(VIDEO_STAGE, sceneId);
+      applyVideoFailureOutcome(
+        sceneId,
+        {
+          kind: "failed_not_retryable",
+          reason: `the clip task did not finish within ${ceilingMs / 1000} s (twice the ${ceilingMs / 2000} s phase limit); the provider task may still be running and billed. Retry to send a new task.`,
+        },
+        attemptNumber,
+      );
+      broadcast(fresh.runId);
+      return;
+    }
+    // show-clip-task-liveness (JOS-233), design Decision 3 — the task was asked about and is still running: say so.
+    recordTaskCheck(sceneId, requestId, new Date().toISOString());
+    broadcast(fresh.runId);
+    const timer = setTimeout(() => { void pollVideoRequestOnce(sceneId, requestId, attemptNumber, sentAtMs); }, videoPollIntervalMs);
+    if (typeof timer === "object" && timer !== null && "unref" in timer) timer.unref();
+    return;
+  }
+
+  const latencyMs = Date.now() - sentAtMs;
+
+  if (pollResult.kind === "not_found" || pollResult.kind === "failed_transient" || pollResult.kind === "failed_not_retryable") {
+    const isNotRetryable = pollResult.kind === "failed_not_retryable";
+    const mode = isNotRetryable ? "not_retryable_failure" : "transient_failure";
+    const reason = pollResult.kind === "not_found" ? "the video provider no longer holds the request" : pollResult.reason;
+    const kind: "failed_not_retryable" | "failed_transient" = isNotRetryable ? "failed_not_retryable" : "failed_transient";
+    const unresponsive = pollResult.kind === "failed_transient" && pollResult.unresponsive;
+    insertProviderRequest(requestId, sceneId, latencyMs, mode, attemptNumber, "video", { unresponsive });
+    markProviderRequestResolved(requestId);
+    concurrency.release(VIDEO_STAGE, sceneId);
+    applyVideoFailureOutcome(sceneId, { kind, reason }, attemptNumber);
+    broadcast(fresh.runId);
+    return;
+  }
+
+  // success
+  const clip = pollResult.clip;
+  let clipBytes: Buffer;
+  if (clip.source === "bytes") {
+    clipBytes = clip.bytes;
+  } else {
+    const downloaded = await downloadGeneratedClip(clip.url);
+    if (!downloaded.ok) {
+      insertProviderRequest(requestId, sceneId, latencyMs, "transient_failure", attemptNumber, "video");
+      markProviderRequestResolved(requestId);
+      concurrency.release(VIDEO_STAGE, sceneId);
+      applyVideoFailureOutcome(sceneId, { kind: "failed_transient", reason: downloaded.reason }, attemptNumber);
+      broadcast(fresh.runId);
+      return;
+    }
+    clipBytes = downloaded.bytes;
+  }
+
+  // A clip is never launched without its requested duration (runVideoAttempt), so it is set here.
+  const checked = await clipCheck(clipBytes, fresh.requestedDurationSeconds ?? 0);
+  if (!checked.ok) {
+    // A tool that cannot run says nothing about the clip, and a retry would be a paid request that fails the same way.
+    const kind = checked.unavailable ? "failed_not_retryable" : "failed_transient";
+    insertProviderRequest(requestId, sceneId, latencyMs, checked.unavailable ? "not_retryable_failure" : "transient_failure", attemptNumber, "video");
+    markProviderRequestResolved(requestId);
+    concurrency.release(VIDEO_STAGE, sceneId);
+    applyVideoFailureOutcome(sceneId, { kind, reason: checked.reason }, attemptNumber);
+    broadcast(fresh.runId);
+    return;
+  }
+
+  const run = getRun(fresh.runId)!;
+  let relativePath: string;
+  try {
+    relativePath = writeArtefactOnce(run.projectFolder, `${sceneFileStem(fresh)}.mp4`, clipBytes);
+  } catch (err) {
+    if (err instanceof ArtefactAlreadyExistsError) {
+      // Duplicate success — already committed; release and return
+      insertProviderRequest(requestId, sceneId, latencyMs, "success", attemptNumber, "video");
+      markProviderRequestResolved(requestId);
+      concurrency.release(VIDEO_STAGE, sceneId);
+      return;
+    }
+    insertProviderRequest(requestId, sceneId, latencyMs, "transient_failure", attemptNumber, "video");
+    markProviderRequestResolved(requestId);
+    concurrency.release(VIDEO_STAGE, sceneId);
+    applyVideoFailureOutcome(sceneId, { kind: "failed_transient", reason: err instanceof Error ? err.message : "failed to write the clip file" }, attemptNumber);
+    broadcast(fresh.runId);
+    return;
+  }
+
+  insertProviderRequest(requestId, sceneId, latencyMs, "success", attemptNumber, "video");
+  markProviderRequestResolved(requestId);
+  concurrency.release(VIDEO_STAGE, sceneId);
+  completeVideoStage(sceneId, relativePath);
+  broadcast(fresh.runId);
+}
+
+async function runVideoAttempt(sceneId: string): Promise<void> {
+  // Yield before any DB writes so that image-complete observers (e.g. 5ms
+  // waitFor polls in tests) can fire before we transition to video-generating.
+  // videoStageStartDelayMs is 0 in production; tests that only test the image
+  // stage set it to a large value so the video stage never starts during them.
+  if (videoStageStartDelayMs > 0) {
+    await new Promise<void>(resolve => {
+      const t = setTimeout(resolve, videoStageStartDelayMs);
+      if (typeof t === "object" && t !== null && "unref" in t) t.unref();
+    });
+  }
+
+  const fresh = getScene(sceneId);
+  if (!fresh || fresh.status !== "image-complete") {
+    concurrency.release(VIDEO_STAGE, sceneId);
+    return;
+  }
+  const freshRun = getRun(fresh.runId);
+  if (!freshRun || !admitLaunch(fresh.runId).admitted) {
+    concurrency.release(VIDEO_STAGE, sceneId);
+    return;
+  }
+
+  // Decision 4 — need stored requested duration
+  if (fresh.requestedDurationSeconds === null) {
+    if (fresh.videoProvider === null) resetAttemptsForVideoStart(sceneId);
+    concurrency.release(VIDEO_STAGE, sceneId);
+    markSceneFailed(sceneId, "no requested duration is stored for this chunk (not retryable)");
+    broadcast(fresh.runId);
+    return;
+  }
+
+  // manage-providers-from-admin (JOS-218), Decision 4 — before the scene is bound, the active video provider must admit
+  // the duration stored for it; otherwise the scene fails here, unbound, and can be retried after the active provider
+  // is changed back.
+  if (fresh.videoProvider === null) {
+    const { min, max, label } = activeVideoDurations();
+    if (fresh.requestedDurationSeconds < min || fresh.requestedDurationSeconds > max) {
+      resetAttemptsForVideoStart(sceneId);
+      concurrency.release(VIDEO_STAGE, sceneId);
+      markSceneFailed(sceneId, `the requested duration of ${fresh.requestedDurationSeconds} s is not admitted by the ${label} video provider (${min} to ${max} s); switch the active video provider back and retry (not retryable)`);
+      broadcast(fresh.runId);
+      return;
+    }
+  }
+
+  // Decision 1 — need a readable image file
+  if (!fresh.result) {
+    if (fresh.videoProvider === null) resetAttemptsForVideoStart(sceneId);
+    concurrency.release(VIDEO_STAGE, sceneId);
+    markSceneFailed(sceneId, "no image path is stored for this chunk (not retryable)");
+    broadcast(fresh.runId);
+    return;
+  }
+
+  let imageBytes: Buffer;
+  try {
+    imageBytes = readFileSync(resolveArtefactPath(freshRun.projectFolder, fresh.result));
+  } catch (err) {
+    recordCaughtError(err, { stage: "video" }); // fails the scene with no attempt or request, so nothing else reports it
+    if (fresh.videoProvider === null) resetAttemptsForVideoStart(sceneId);
+    concurrency.release(VIDEO_STAGE, sceneId);
+    markSceneFailed(sceneId, `the image file '${fresh.result}' could not be read (not retryable)`);
+    broadcast(fresh.runId);
+    return;
+  }
+
+  // Bind on first attempt (Decision 5); reset per-stage attempt counter
+  const isFirstAttempt = fresh.videoProvider === null;
+  const registry = getVideoProviderRegistry();
+  if (isFirstAttempt) {
+    bindSceneVideoProvider(sceneId, activeProviderId("video"));
+    resetAttemptsForVideoStart(sceneId);
+  }
+  const reread = getScene(sceneId)!;
+  const boundId = reread.videoProvider ?? registry.defaultIdentifier;
+  const adapter = registry.adapters[boundId];
+
+  const attemptNumber = (isFirstAttempt ? 0 : reread.attempts) + 1;
+  const localId = randomUUID();
+  markVideoGenerating(sceneId, localId, attemptNumber);
+  broadcast(fresh.runId);
+
+  if (!adapter) {
+    insertProviderRequest(localId, sceneId, 0, "not_retryable_failure", attemptNumber, "video");
+    markProviderRequestResolved(localId);
+    concurrency.release(VIDEO_STAGE, sceneId);
+    applyVideoFailureOutcome(sceneId, { kind: "failed_not_retryable", reason: `no adapter is configured for the bound video provider '${boundId}'` }, attemptNumber);
+    broadcast(fresh.runId);
+    return;
+  }
+
+  const sentAtMs = Date.now();
+  let submitResult: VideoSubmitResult;
+  try {
+    submitResult = await adapter.submit({
+      imageBytes,
+      instruction: fresh.videoInstruction,
+      durationSeconds: fresh.requestedDurationSeconds,
+    });
+  } catch (err) {
+    submitResult = {
+      kind: "failed_transient",
+      reason: err instanceof Error ? `video provider submit threw: ${err.message}` : "video provider submit threw",
+    };
+  }
+
+  if (submitResult.kind !== "submitted") {
+    const latencyMs = Date.now() - sentAtMs;
+    const mode = submitResult.kind === "failed_not_retryable" ? "not_retryable_failure" : "transient_failure";
+    const unresponsive = submitResult.kind === "failed_transient" && submitResult.unresponsive;
+    insertProviderRequest(localId, sceneId, latencyMs, mode, attemptNumber, "video", { unresponsive });
+    markProviderRequestResolved(localId);
+    concurrency.release(VIDEO_STAGE, sceneId);
+    applyVideoFailureOutcome(sceneId, submitResult, attemptNumber);
+    broadcast(fresh.runId);
+    return;
+  }
+
+  // Update current_request_id to the provider's taskId for restart reconciliation
+  db.prepare("UPDATE scenes SET current_request_id = ? WHERE id = ?").run(submitResult.requestId, sceneId);
+  // show-video-request-status (JOS-200) — the request is sent: keep when, and the allow-listed body, for the page.
+  if (submitResult.sentBody) recordVideoRequestSent(sceneId, new Date(sentAtMs).toISOString(), allowListVideoRequest(submitResult.sentBody, reread.index));
+  broadcast(fresh.runId);
+
+  await pollVideoRequestOnce(sceneId, submitResult.requestId, attemptNumber, sentAtMs);
+}
+
+export function launchVideoStage(sceneId: string): void {
+  const scene = getScene(sceneId);
+  if (!scene || scene.status !== "image-complete") return;
+  if (!admitLaunch(scene.runId).admitted) return;
+
+  concurrency.acquire(VIDEO_STAGE, sceneId, () => {
+    void runVideoAttempt(sceneId);
+  });
+}
+
+export function launchVideoStageForRun(runId: string): void {
+  for (const scene of getImageCompleteScenesForRun(runId).filter((item) => item.requestedDurationSeconds !== null)) {
+    launchVideoStage(scene.id);
+  }
+}
+export const videoStageLauncher: StageLauncher = {
+  stage: "video",
+  heldWork: (sessionId: string) => {
+    const scenes = getImageCompleteScenesForRun(sessionId).filter((scene) => scene.requestedDurationSeconds !== null);
+    return { count: scenes.length, sceneIds: scenes.map((s) => s.id) };
+  },
+  settleInFlight: settleVideoInFlight,
+  launch: launchVideoStageForRun,
+};
+
+registerStageLauncher(videoStageLauncher);
+
+export const assemblyStageLauncher: StageLauncher = {
+  stage: "assembly",
+  heldWork: (sessionId: string) => {
+    const run = getRun(sessionId);
+    const gate = assemblyGate(getScenesForRun(sessionId));
+    const inFlight = getStageAttempts(sessionId, "assembly").some((attempt) => attempt.outcome === "in-flight");
+    // retry-final-assembly (JOS-159), design Decision 4 — a recorded assembly failure is not held work: the retry
+    // service claims its own cycle synchronously (Decision 3), so continue must never silently relaunch a failed,
+    // non-retrying assembly on its own. A session paused mid-attempt is unaffected: `inFlight` already covers it.
+    const blockedByFailure = run?.failure?.phase === "assembly";
+    // adjust-scene-pause (JOS-190), Decision 6 — a rebuild asked for while paused is held work like a first assembly.
+    const rebuildPending = run?.finalVideoPath != null && run.rebuildRequestedAt != null;
+    // rebuild-scene (JOS-235), Decision 6 — a final video older than a rebuilt scene is rebuilt on continue.
+    const stale = run?.finalVideoPath != null && run.finalVideoStale && run.rebuildRequestedAt == null;
+    const count = run && (!run.finalVideoPath || rebuildPending || stale) && gate.open && !inFlight && !blockedByFailure ? 1 : 0;
+    return { count, sceneIds: [] };
+  },
+  // Stricter than `heldWork` (restart-recovery, Decision 3): boot must not relaunch an assembly whose budget is spent
+  // or that failed for good, which `heldWork` still counts as waiting.
+  pendingAtBoot: (sessionId: string) => {
+    const run = getRun(sessionId);
+    const attempts = getStageAttempts(sessionId, "assembly");
+    const settled = restartSettledAssemblyAttempt(sessionId);
+    // retry-final-assembly (JOS-159) — a pre-attempt failure (no tool, no voice-over, a missing clip) records
+    // `run.failure` with zero attempt rows, which `attempts.length === 0` below would otherwise read as "never
+    // tried yet" and relaunch forever across every restart.
+    const blockedByFailure = run?.failure?.phase === "assembly";
+    const due =
+      run && !run.finalVideoPath && !blockedByFailure && assemblyGate(getScenesForRun(sessionId)).open &&
+      (attempts.length === 0 || (settled !== null && settled.sequenceInCycle < 1 + RETRY_BUDGET));
+    return { count: due ? 1 : 0, sceneIds: [] };
+  },
+  settleInFlight: settleAssemblyInFlight,
+  launch: triggerAssemblyIfReady,
+};
+
+registerStageLauncher(assemblyStageLauncher);
+
+/** The session's snapshot as the adapter receives it; null when the session has none, "missing" when its file cannot be read. */
+function readRunReferenceImage(run: Run): ReferenceImage | null | "missing" {
+  if (!run.referenceImage) return null;
+  try {
+    const bytes = readFileSync(resolveArtefactPath(run.projectFolder, run.referenceImage.path));
+    return { bytes, contentType: run.referenceImage.contentType, sha256: run.referenceImage.sha256 };
+  } catch {
+    return "missing";
+  }
+}
+
+async function runImageAttempt(sceneId: string): Promise<void> {
+  const fresh = getScene(sceneId);
+  if (!fresh || fresh.status !== "submitted") {
+    concurrency.release(STAGE, sceneId);
+    return;
+  }
+  if (!admitLaunch(fresh.runId).admitted) {
+    // Paused while queued: give the slot to the next waiter without
+    // sending anything. No attempt is consumed (design Decision 2).
+    // An unknown session (missing run) is also not admitted.
+    concurrency.release(STAGE, sceneId);
+    return;
+  }
+  const freshRun = getRun(fresh.runId)!;
+
+  // design Decision 3 — bound once, atomically, and only if still unbound.
+  const registry = getImageProviderRegistry();
+  bindSceneImageProvider(fresh.id, activeProviderId("image"));
+  const boundIdentifier = getScene(fresh.id)!.provider;
+  const adapter = registry.adapters[boundIdentifier];
+
+  _postAdmitHook?.(fresh.runId);
+  const attemptNumber = fresh.attempts + 1;
+  const requestId = randomUUID();
+  markSceneInFlight(fresh.id, requestId, attemptNumber);
+  broadcast(fresh.runId);
+
+  const recordAndRelease = (mode: "success" | "transient_failure" | "not_retryable_failure", latencyMs: number) =>
+    recordAndReleaseImageAttempt(sceneId, requestId, attemptNumber, mode, latencyMs);
+
+  if (!adapter) {
+    recordAndRelease("not_retryable_failure", 0);
+    applyFailureOutcome(
+      fresh.id,
+      { kind: "failed_not_retryable", reason: `no adapter is configured for the bound provider '${boundIdentifier}'` },
+      attemptNumber,
+      () => launchImageStage(fresh.id),
+    );
+    broadcast(fresh.runId);
+    return;
+  }
+
+  // use-reference-image-in-generation (JOS-202), Decision 3 — read from the session's own snapshot at every launch, so a
+  // retry or a request after a restart carries the same image whatever `/admin` holds now.
+  const referenceImage = readRunReferenceImage(freshRun);
+  if (referenceImage === "missing") {
+    recordAndRelease("not_retryable_failure", 0);
+    applyFailureOutcome(
+      fresh.id,
+      { kind: "failed_not_retryable", reason: "the session's reference image file is missing from its project folder" },
+      attemptNumber,
+      () => launchImageStage(fresh.id),
+    );
+    broadcast(fresh.runId);
+    return;
+  }
+
+  const submittedAtMs = Date.now();
+  let submitted: ImageSubmitResult;
+  try {
+    submitted = await adapter.submit(fresh.imageInstruction, referenceImage ?? undefined);
+  } catch (err) {
+    submitted = {
+      kind: "failed_transient",
+      reason: err instanceof Error ? `the image provider threw: ${err.message}` : "the image provider threw an unexpected error",
+    };
+  }
+  if (submitted.kind !== "submitted") {
+    finishImageAttempt(fresh.id, requestId, attemptNumber, Date.now() - submittedAtMs, submitted);
+    return;
+  }
+
+  // follow-fal-image-queue (JOS-239), design Decisions 3-4 — the slot stays taken until the request ends; the same
+  // request is followed until it completes, fails or reaches its ceiling, and is never resubmitted while it can finish.
+  recordImageProviderRequestId(fresh.id, submitted.handle.requestId);
+  scheduleImagePoll({ sceneId: fresh.id, requestId, handle: submitted.handle, attemptNumber, submittedAtMs });
+}
+
+/** One image request being followed at the provider (`inProgressAtMs`: when a check first saw it running). */
+interface ImageRequestInFlight {
+  sceneId: string;
+  requestId: string;
+  handle: ImageHandle;
+  attemptNumber: number;
+  submittedAtMs: number;
+  inProgressAtMs?: number;
+}
+
+function scheduleImagePoll(request: ImageRequestInFlight): void {
+  const timer = setTimeout(() => {
+    void pollImageRequestOnce(request);
+  }, imagePollIntervalMs);
+  if (typeof timer === "object" && timer !== null && "unref" in timer) timer.unref();
+}
+
+/** The attempt's one `provider_requests` row, written when the request ends (latency: submission to end), and its slot released. */
+function recordAndReleaseImageAttempt(
+  sceneId: string,
+  requestId: string,
+  attemptNumber: number,
+  mode: "success" | "transient_failure" | "not_retryable_failure",
+  latencyMs: number,
+  unresponsive?: boolean,
+): void {
+  concurrency.release(STAGE, sceneId);
+  // design Decision 6 — inserted already resolved: the request has already ended by the time it is recorded.
+  insertProviderRequest(requestId, sceneId, latencyMs, mode, attemptNumber, "image", { unresponsive });
+  markProviderRequestResolved(requestId);
+}
+
+/**
+ * follow-fal-image-queue (JOS-239), design Decision 5 — an automatic image retry is sent only after the retry policy's
+ * delay (at least the provider's own `Retry-After`), not at once: a retry sent at once only joins the queue it is
+ * waiting in. The scene is `submitted` meanwhile, so a pause holds it and a restart relaunches it.
+ */
+function scheduleImageRetry(sceneId: string, failedAttemptNumber: number, retryAfterSeconds?: number): void {
+  const delaySeconds = retryDelaySeconds({
+    failedSequence: failedAttemptNumber,
+    config: getRetryDelayConfig(),
+    ...(retryAfterSeconds === undefined ? {} : { retryAfterSeconds }),
+  });
+  const timer = setTimeout(() => launchImageStage(sceneId), delaySeconds * 1000);
+  if (typeof timer === "object" && timer !== null && "unref" in timer) timer.unref();
+}
+
+async function pollImageRequestOnce(request: ImageRequestInFlight): Promise<void> {
+  const { sceneId, requestId, handle, attemptNumber, submittedAtMs } = request;
+  const fresh = getScene(sceneId);
+  if (!fresh || fresh.status !== "image-generating") {
+    concurrency.release(STAGE, sceneId);
+    return;
+  }
+  const adapter = getImageProviderRegistry().adapters[fresh.provider];
+  if (!adapter) {
+    finishImageAttempt(
+      sceneId,
+      requestId,
+      attemptNumber,
+      Date.now() - submittedAtMs,
+      { kind: "failed_not_retryable", reason: `no adapter is configured for the bound provider '${fresh.provider}'` },
+    );
+    return;
+  }
+
+  let result: ImagePollResult;
+  try {
+    result = await adapter.poll(handle);
+  } catch {
+    result = { kind: "check-failed" };
+  }
+  const now = Date.now();
+  if (result.kind === "success" || result.kind === "failed_transient" || result.kind === "failed_not_retryable") {
+    finishImageAttempt(sceneId, requestId, attemptNumber, now - submittedAtMs, result);
+    return;
+  }
+
+  // The image clock counts from the first check that saw the request running; time in the provider's queue is not execution time.
+  const inProgressAtMs = request.inProgressAtMs ?? (result.kind === "in-progress" ? now : undefined);
+  const next: ImageRequestInFlight = inProgressAtMs === undefined ? request : { ...request, inProgressAtMs };
+  const ceilingMs = imageTaskCeilingMs();
+  const boundMs = imageRequestBoundMs();
+  const reachedCeiling =
+    ceilingMs !== undefined &&
+    ((inProgressAtMs !== undefined && now - inProgressAtMs > ceilingMs) || (boundMs !== undefined && now - submittedAtMs > boundMs));
+  if (reachedCeiling) {
+    await endImageRequestAtCeiling(next, adapter, ceilingMs);
+    return;
+  }
+  scheduleImagePoll(next);
+}
+
+/** The ceiling (twice the image limit from the start, or the bound from the submission): one cancel, then the scene fails with no retry in this cycle. */
+async function endImageRequestAtCeiling(request: ImageRequestInFlight, adapter: ImageProvider, ceilingMs: number): Promise<void> {
+  const { sceneId, requestId, handle, attemptNumber, submittedAtMs } = request;
+  let cancelled: Awaited<ReturnType<ImageProvider["cancel"]>>;
+  try {
+    cancelled = await adapter.cancel(handle);
+  } catch {
+    cancelled = "unknown";
+  }
+  if (cancelled === "already-completed") {
+    // It finished just before the cancel: its result is fetched and handled as any other.
+    let last: ImagePollResult;
+    try {
+      last = await adapter.poll(handle);
+    } catch {
+      last = { kind: "check-failed" };
+    }
+    if (last.kind === "success" || last.kind === "failed_transient" || last.kind === "failed_not_retryable") {
+      finishImageAttempt(sceneId, requestId, attemptNumber, Date.now() - submittedAtMs, last);
+      return;
+    }
+  }
+  const scene = getScene(sceneId);
+  if (!scene) {
+    concurrency.release(STAGE, sceneId);
+    return;
+  }
+  // Recorded as transient so the end-of-session sweep (design Decision 6) can still retry the scene.
+  recordAndReleaseImageAttempt(sceneId, requestId, attemptNumber, "transient_failure", Date.now() - submittedAtMs);
+  markSceneFailed(
+    sceneId,
+    `the image request did not finish within ${ceilingMs / 1000} s (twice the ${ceilingMs / 2000} s limit); the provider may still finish and bill it`,
+  );
+  broadcast(scene.runId);
+}
+
+/** Settles one ended image request: records its row and releases its slot, then applies a failure or stores the image. */
+function finishImageAttempt(
+  sceneId: string,
+  requestId: string,
+  attemptNumber: number,
+  latencyMs: number,
+  outcome: ImageGenerationResult,
+): void {
+  void finishImageAttemptAsync(sceneId, requestId, attemptNumber, latencyMs, outcome);
+}
+
+async function finishImageAttemptAsync(
+  sceneId: string,
+  requestId: string,
+  attemptNumber: number,
+  latencyMs: number,
+  outcome: ImageGenerationResult,
+): Promise<void> {
+  const fresh = getScene(sceneId);
+  const freshRun = fresh ? getRun(fresh.runId) : undefined;
+  if (!fresh || !freshRun) {
+    concurrency.release(STAGE, sceneId);
+    return;
+  }
+  const record = (mode: "success" | "transient_failure" | "not_retryable_failure", ms: number, unresponsive?: boolean) =>
+    recordAndReleaseImageAttempt(sceneId, requestId, attemptNumber, mode, ms, unresponsive);
+
+  if (outcome.kind !== "success") {
+    if (outcome.kind === "failed_not_retryable") record("not_retryable_failure", latencyMs);
+    else record("transient_failure", latencyMs, outcome.unresponsive);
+    applyFailureOutcome(fresh.id, outcome, attemptNumber, () =>
+      scheduleImageRetry(fresh.id, attemptNumber, outcome.kind === "failed_transient" ? outcome.retryAfterSeconds : undefined),
+    );
+    broadcast(fresh.runId);
+    return;
+  }
+
+  let bytes: Buffer;
+  let contentType: string;
+  if (outcome.image.source === "bytes") {
+    bytes = outcome.image.bytes;
+    contentType = outcome.image.contentType;
+  } else {
+    // §12.2 — no expiring links: resolved to a local file before success.
+    const downloaded = await downloadGeneratedImage(outcome.image.url);
+    if (!downloaded.ok) {
+      record("transient_failure", latencyMs);
+      applyFailureOutcome(fresh.id, { kind: "failed_transient", reason: downloaded.reason }, attemptNumber, () =>
+        scheduleImageRetry(fresh.id, attemptNumber),
+      );
+      broadcast(fresh.runId);
+      return;
+    }
+    bytes = downloaded.bytes;
+    contentType = downloaded.contentType;
+  }
+
+  // design Decision 1 — measured from the bytes actually held, never from
+  // provider-reported metadata (contentType is only ever used for the
+  // stored filename's extension, not for acceptance).
+  const dimensions = readImageDimensions(bytes);
+  if (!dimensions || !isAcceptedImageSize(dimensions.width, dimensions.height)) {
+    record("transient_failure", latencyMs);
+    const reason = dimensions
+      ? `the generated image is ${dimensions.width}x${dimensions.height}, not an accepted horizontal 16:9 size`
+      : "the generated image's dimensions could not be read";
+    applyFailureOutcome(fresh.id, { kind: "failed_transient", reason }, attemptNumber, () => scheduleImageRetry(fresh.id, attemptNumber));
+    broadcast(fresh.runId);
+    return;
+  }
+
+  const extension = sniffImageExtension(bytes) ?? (contentType.includes("png") ? "png" : "jpg");
+  const relativePath = writeArtefactOnce(freshRun.projectFolder, `${sceneFileStem(fresh)}-attempt-${attemptNumber}.${extension}`, bytes);
+  record("success", latencyMs);
+  completeImageStage(fresh.id, relativePath);
+  broadcast(fresh.runId);
+}
+
+
+/** PRD §9 — pause holds every not-yet-launched generation and retry; requests
+ * already sent run to completion. There is no per-scene pause. */
+export function pauseSession(runId: string): { ok: boolean; reason?: string } {
+  const run = getRun(runId);
+  if (!run) return { ok: false, reason: "unknown session" };
+  const changed = setRunPaused(runId, true);
+  if (changed) broadcast(runId);
+  return { ok: true };
+}
+
+/** Continuing removes the marker and leaves state unchanged, then launches
+ * everything that was held. Only sweeps when the pause marker was actually set. */
+export function continueSession(runId: string): { ok: boolean; reason?: string } {
+  const run = getRun(runId);
+  if (!run) return { ok: false, reason: "unknown session" };
+  const changed = setRunPaused(runId, false);
+  broadcast(runId);
+  if (changed) launchHeldWork(runId);
+  return { ok: true };
+}
+
+/**
+ * Applies a (possibly duplicate) provider delivery idempotently — proves C7.
+ * Safe to call twice with the same requestId: the second call is a no-op.
+ */
+export function handleProviderResult(requestId: string): { applied: boolean; note: string } {
+  const req = getProviderRequest(requestId);
+  if (!req) return { applied: false, note: "unknown request id" };
+  if (req.resolved) return { applied: false, note: "duplicate delivery ignored (request already resolved)" };
+
+  const scene = getScene(req.sceneId);
+  if (!scene) return { applied: false, note: "scene not found" };
+
+  if (sceneCurrentRequestId(scene.id) !== requestId) {
+    // Defensive: this scene has already moved past this request (should not
+    // occur in this skeleton, since attempts are strictly sequential).
+    markProviderRequestResolved(requestId);
+    return { applied: false, note: "stale request ignored (scene has moved on)" };
+  }
+
+  const poll = provider.pollResult(requestId);
+  if (poll.status !== "resolved") {
+    return { applied: false, note: `provider result not ready (${poll.status})` };
+  }
+
+  markProviderRequestResolved(requestId);
+  concurrency.release(STAGE, scene.id);
+  applyOutcome(scene, poll.outcome, req.attemptNumber);
+  broadcast(scene.runId);
+  return { applied: true, note: "applied" };
+}
+
+/** Records a delivered success once, idempotently, and marks the image stage complete. */
+function completeImageStage(sceneId: string, relativePath: string): void {
+  // Decision 3 (define-persistence, JOS-181) — the store, not this
+  // function, decides whether this delivery is the one that gets to
+  // "complete" the scene. `commitSceneResult` is the idempotent guard (a
+  // second insert for the same scene is refused by its own primary key);
+  // the next-stage launch is gated on that store-level uniqueness, not on
+  // any flag this code checked beforehand — that is what makes it correct
+  // even if two deliveries for the same scene ever raced each other.
+  // ignore-repeated-success-confirmations (JOS-161), design Decision 1 — a refused commit is a repeated confirmation:
+  // it changes no state, stores no reference and launches nothing.
+  if (!commitSceneResult(sceneId, relativePath)) return;
+  markImageComplete(sceneId, relativePath);
+  nextStageLaunches.set(sceneId, (nextStageLaunches.get(sceneId) ?? 0) + 1);
+  // Only launch video stage for real registered chunks (not createScene skeletons).
+  const scene = getScene(sceneId);
+  if (scene?.requestedDurationSeconds != null) {
+    launchVideoStage(sceneId); // JOS-146 Decision 2 — launch video stage after image complete
+  }
+}
+
+/**
+ * Test-only (repeated-success-confirmations, design Decision 4): delivers an image success to the stage's own success
+ * path, the way a provider delivery reaches it, so a repeated confirmation can be sent without a real provider.
+ */
+export function deliverImageSuccessForTests(sceneId: string, relativePath: string): void {
+  completeImageStage(sceneId, relativePath);
+}
+
+/** The retry/budget rule shared by every stage's failure handling (PRD §10.1) — not the success path, which each stage owns itself. */
+function applyFailureOutcome(
+  sceneId: string,
+  outcome: { kind: "failed_transient" | "failed_not_retryable"; reason: string },
+  attemptNumber: number,
+  retryLaunch: () => void,
+): void {
+  if (outcome.kind === "failed_not_retryable") {
+    // Not-retryable failures skip automatic retries entirely (PRD §10.1).
+    markSceneFailed(sceneId, outcome.reason);
+    return;
+  }
+  if (attemptNumber >= 1 + RETRY_BUDGET) {
+    markSceneFailed(sceneId, `${outcome.reason} (retry budget exhausted after ${attemptNumber} attempts)`);
+    return;
+  }
+  markScenePendingRetry(sceneId, outcome.reason);
+  retryLaunch(); // automatic retry (held automatically if the session is paused)
+}
+
+function applyOutcome(scene: Scene, outcome: ProviderOutcome, attemptNumber: number): void {
+  if (outcome.kind === "success") {
+    const run = getRun(scene.runId);
+    const relativePath = run
+      ? writeArtefact(run.projectFolder, `${sceneFileStem(scene)}.png`, `stub image for scene ${scene.index}: ${outcome.result}`)
+      : outcome.result;
+    completeImageStage(scene.id, relativePath);
+    return;
+  }
+  applyFailureOutcome(scene.id, outcome, attemptNumber, () => launchSceneStage(scene.id));
+}
+
+/**
+ * A manual retry, per PRD §10.2: only valid from `failed`, starts a fresh
+ * cycle of up to RETRY_BUDGET automatic retries.
+ */
+/**
+ * retry-or-correct-image (JOS-157), design Decision 2 — the closed set of reasons a retry or correction can be
+ * refused. `unknown-scene` covers an unknown session, an unknown scene and a scene of another session alike
+ * (the route maps it to 404; the other two reasons map to 409).
+ */
+export type SceneRecoveryRefusal = "unknown-scene" | "not-failed";
+export type SceneRecoveryResult = { ok: true } | { ok: false; reason: SceneRecoveryRefusal };
+
+export function manualRetry(sessionId: string, sceneId: string): SceneRecoveryResult {
+  const scene = getSceneForRun(sessionId, sceneId);
+  if (!scene) return { ok: false, reason: "unknown-scene" };
+  if (scene.status !== "failed") return { ok: false, reason: "not-failed" };
+  if (scene.result === null) {
+    // retry-or-correct-image (JOS-157) — the image stage is the failed stage; its atomic transition returns to submitted.
+    if (!markSceneForManualRetry(sessionId, sceneId, scene.lastError ?? "manual retry")) {
+      return { ok: false, reason: "not-failed" };
+    }
+    resetAttemptsForManualRetry(sceneId);
+    launchSceneStage(sceneId);
+    return { ok: true };
+  }
+
+  // retry-or-correct-clip (JOS-158) — a stored image identifies video as the failed stage.
+  // A committed clip or a lost conditional-write race is a state conflict, never a second launch.
+  if (scene.videoResult !== null) return { ok: false, reason: "not-failed" };
+  if (!markSceneForManualVideoRetry(sessionId, sceneId, scene.lastError ?? "manual video retry")) {
+    return { ok: false, reason: "not-failed" };
+  }
+  resetAttemptsForManualRetry(sceneId);
+  launchVideoStage(sceneId);
+  // retry-or-correct-clip (JOS-158) — publish the accepted transition even when the launch gate holds it.
+  broadcast(sessionId);
+  return { ok: true };
+}
+
+/**
+ * PRD §10.3 — the one visual-correction exception: only offered on a failed
+ * stage, and it is a retry with a corrected instruction, never a rewrite of
+ * `ID`, `PROMPT`-as-narration or scene order.
+ */
+export function correctAndRetry(sessionId: string, sceneId: string, instruction: string): SceneRecoveryResult {
+  const scene = getSceneForRun(sessionId, sceneId);
+  if (!scene) return { ok: false, reason: "unknown-scene" };
+  if (scene.status !== "failed") return { ok: false, reason: "not-failed" };
+  if (scene.result === null) {
+    // retry-or-correct-image (JOS-157) — the image stage is the failed stage; update IMAGE only.
+    const changed = hasImageInstruction(scene)
+      ? correctImageInstruction(sessionId, sceneId, instruction)
+      : correctLegacyInstruction(sessionId, sceneId, instruction);
+    if (!changed) return { ok: false, reason: "not-failed" };
+    resetAttemptsForManualRetry(sceneId);
+    launchSceneStage(sceneId);
+    return { ok: true };
+  }
+
+  // retry-or-correct-clip (JOS-158) — update VIDEO and move directly to the video stage.
+  if (scene.videoResult !== null || !correctVideoInstruction(sessionId, sceneId, instruction.trim())) {
+    return { ok: false, reason: "not-failed" };
+  }
+  resetAttemptsForManualRetry(sceneId);
+  launchVideoStage(sceneId);
+  // A paused session has no provider callback to publish this newly held state.
+  broadcast(sessionId);
+  return { ok: true };
+}
+
+// Kept local and explicit (rather than a generic db setter) so it is obvious
+// this is the one place attempts are ever reset, and only for a manual retry.
+function resetAttemptsForManualRetry(sceneId: string): void {
+  db.prepare("UPDATE scenes SET attempts = 0 WHERE id = ?").run(sceneId);
+}
+
+/** What a stage's boot settle did with its in-flight units. */
+const NOTHING_SETTLED: SettleSummary = { resumed: 0, recordedFailedAttempt: 0, stillPending: 0 };
+
+function occupyResumedRequestSlots(): void {
+  for (const scene of getAllInFlightScenes()) {
+    const requestId = scene.provider === STUB_PROVIDER_NAME ? sceneCurrentRequestId(scene.id) : null;
+    if (requestId && provider.pollResult(requestId).status === "pending") concurrency.occupy(STAGE, scene.id);
+  }
+  for (const scene of getAllVideoGeneratingScenes()) {
+    if (scene.videoProvider && sceneCurrentRequestId(scene.id)) concurrency.occupy(VIDEO_STAGE, scene.id);
+  }
+}
+
+/** The image stage's boot settle (restart-recovery): applies, fails or re-arms every `image-generating` scene. */
+function settleImageInFlight(): SettleSummary {
+  let resumed = 0;
+  let recordedFailedAttempt = 0;
+  let stillPending = 0;
+  for (const scene of getAllInFlightScenes()) {
+    // generate-chunk-image (JOS-145), design Decision 6 — a real image
+    // attempt is bound (scenes.provider is no longer the sentinel) by the
+    // time it is in flight; there is no live Fal.ai job to poll after a
+    // restart, so it is always treated as lost, unlike the generic stub
+    // scenes below (still at the sentinel, resolved through `provider.ts`).
+    if (scene.provider !== STUB_PROVIDER_NAME) {
+      applyFailureOutcome(
+        scene.id,
+        { kind: "failed_transient", reason: "the image request was interrupted by a restart" },
+        scene.attempts,
+        () => scheduleImageRetry(scene.id, scene.attempts),
+      );
+      broadcast(scene.runId);
+      recordedFailedAttempt++;
+      continue;
+    }
+
+    const requestId = sceneCurrentRequestId(scene.id);
+    if (!requestId) continue;
+    const poll = provider.pollResult(requestId);
+
+    if (poll.status === "resolved") {
+      markProviderRequestResolved(requestId);
+      applyOutcome(scene, poll.outcome, scene.attempts);
+      broadcast(scene.runId);
+      resumed++;
+      continue;
+    }
+
+    if (poll.status === "not_found") {
+      markProviderRequestResolved(requestId);
+      applyOutcome(
+        scene,
+        { kind: "failed_transient", reason: "stub: provider no longer holds this request after restart" },
+        scene.attempts,
+      );
+      broadcast(scene.runId);
+      recordedFailedAttempt++;
+      continue;
+    }
+
+    // Still pending: re-arm delivery for the remaining latency.
+    const req = getProviderRequest(requestId);
+    if (req) {
+      const remainingMs = Math.max(0, new Date(req.sentAt).getTime() + req.latencyMs - Date.now());
+      provider.deliverWhenReady(requestId, remainingMs, handleProviderResult);
+    }
+    stillPending++;
+  }
+  return { resumed, recordedFailedAttempt, stillPending };
+}
+
+/** The clip stage's boot settle (restart-recovery): resumes polling, or fails a request the store cannot resume. */
+function settleVideoInFlight(): SettleSummary {
+  let recordedFailedAttempt = 0;
+  let stillPending = 0;
+  // JOS-146 Decision 9 — reconcile video-generating scenes through the bound adapter.
+  for (const scene of getAllVideoGeneratingScenes()) {
+    if (!scene.videoProvider) {
+      // No bound provider — treat as a lost attempt
+      applyVideoFailureOutcome(
+        scene.id,
+        { kind: "failed_transient", reason: "the video request was interrupted by a restart (no bound provider)" },
+        scene.attempts,
+      );
+      broadcast(scene.runId);
+      recordedFailedAttempt++;
+      continue;
+    }
+
+    const requestId = sceneCurrentRequestId(scene.id);
+    if (!requestId) {
+      applyVideoFailureOutcome(
+        scene.id,
+        { kind: "failed_transient", reason: "the video request id was lost on restart" },
+        scene.attempts,
+      );
+      broadcast(scene.runId);
+      recordedFailedAttempt++;
+      continue;
+    }
+
+    // The request already holds its slot (taken above): resume polling the same task. keep-clip-task-on-timeout (JOS-204),
+    // design Decision 3 — the ceiling counts from the original send, so a restart never extends the wait; a scene with no
+    // stored send time (sent before JOS-200) is counted from now.
+    const sentAtMs = scene.videoRequestSentAt ? Date.parse(scene.videoRequestSentAt) : Number.NaN;
+    void pollVideoRequestOnce(scene.id, requestId, scene.attempts, Number.isNaN(sentAtMs) ? Date.now() : sentAtMs);
+    stillPending++;
+  }
+  return { resumed: 0, recordedFailedAttempt, stillPending };
+}
+
+/**
+ * The assembly stage's boot settle (restart-recovery): the tool ran in the process that died, so an attempt left in
+ * flight is a lost one. It ends as transient; whether another attempt follows is the relaunch pass's decision.
+ */
+function settleAssemblyInFlight(): SettleSummary {
+  let recordedFailedAttempt = 0;
+  for (const attempt of getInFlightAttempts()) {
+    if (attempt.stage !== "assembly") continue;
+    completeStageAttempt(attempt.id, { outcome: "transient", finishedAt: new Date().toISOString(), errorMessage: RESTART_CAUSE });
+    // adjust-scene-pause (JOS-190), Decision 8 — an interrupted rebuild is not relaunched (a rebuild is the User's
+    // decision, and `pendingAtBoot` needs no final video); its request is cleared so Rebuild can be pressed again.
+    if (getRun(attempt.runId)?.finalVideoPath) {
+      clearFinalVideoRebuildRequest(attempt.runId);
+      broadcast(attempt.runId);
+      recordedFailedAttempt++;
+      continue;
+    }
+    // retry-final-assembly (JOS-159) — if this was the cycle's last attempt, `pendingAtBoot` will not relaunch it
+    // (its own budget check), so nothing else would ever record the failure; do it here, where the settle result
+    // is known, rather than leaving the session silently stuck in `final-video-generating`.
+    if (attempt.sequenceInCycle >= 1 + RETRY_BUDGET) {
+      recordAssemblyFailure(attempt.runId, "a restart interrupted the last attempt of its cycle", true, attempt);
+    }
+    broadcast(attempt.runId);
+    recordedFailedAttempt++;
+  }
+  return { ...NOTHING_SETTLED, recordedFailedAttempt };
+}
+
+/**
+ * Boot recovery (restart-recovery, JOS-160) — settle, then relaunch (design Decision 1).
+ *
+ * Every request that is resumed rather than recorded as failed already sits at the provider, so it takes its
+ * concurrency slot up front (JOS-186): a retry scheduled for a lost request must not start ahead of a pending request
+ * that is not yet counted. Each registered stage then settles its in-flight units. Waiting callbacks were lost on
+ * restart, so the relaunch pass rebuilds them last; launchers preserve eligibility and acquire ignores holders already
+ * queued by a retry above.
+ */
+/**
+ * retry-final-assembly (JOS-159), task 4.4, design.md Migration Plan — a session stuck in `final-video-generating`
+ * from before this change (PR #25's code never called `setRunFailure` on an assembly failure). Its last assembly
+ * attempt already settled `transient` (budget exhausted) or `not-retryable`, with no final video and no failure
+ * recorded; `settleAllInFlight` (called just before this, in `recoverOnBoot`) has already recorded a failure for
+ * any attempt genuinely interrupted by *this* restart, so this only ever finds older, already-settled attempts.
+ */
+function recordMissingAssemblyFailuresOnBoot(): void {
+  const stuck = db.prepare(`SELECT id AS runId FROM runs WHERE final_video_path IS NULL AND failure IS NULL`).all() as Array<{ runId: string }>;
+  for (const { runId } of stuck) {
+    const run = getRun(runId);
+    // Found manually testing 10.3/10.4 (not caught by any unit test): an *unpaused* session with no failure and
+    // an exhausted/not-retryable latest attempt can only be truly stuck (nothing else will ever touch it — see
+    // below). A *paused* one is ambiguous from attempt-row state alone: `beginAssemblyRetry` clears the failure
+    // and leaves no other trace, so this same shape also matches a retry that was just accepted and is sitting
+    // held, waiting for continue, interrupted by this very restart. Re-recording the old failure there would
+    // silently undo an accepted retry. Skipping it here is safe either way: `continueSession` resumes a genuine
+    // held retry normally, and a genuinely stuck paused legacy session just gets one fresh attempt on continue,
+    // which records its failure correctly through the ordinary path if it fails again.
+    if (!run || run.paused) continue;
+    const latest = getStageAttempts(runId, "assembly").at(-1);
+    if (!latest) continue;
+    // A transient attempt with budget remaining is mid-cycle, not stuck — `relaunchPendingWork` (called right
+    // after this in `recoverOnBoot`) continues it normally, the same as `settleAssemblyInFlight` only recording a
+    // failure once a cycle's budget is actually exhausted.
+    if (latest.outcome === "transient" && latest.sequenceInCycle < 1 + RETRY_BUDGET) continue;
+    if (latest.outcome !== "transient" && latest.outcome !== "not-retryable") continue;
+    recordAssemblyFailure(runId, latest.errorMessage ?? "the final video could not be assembled", latest.outcome === "transient", latest);
+    broadcast(runId);
+  }
+}
+
+export function recoverOnBoot(): SettleSummary {
+  occupyResumedRequestSlots();
+  const summary = settleAllInFlight();
+  recordMissingAssemblyFailuresOnBoot();
+  // Waiting callbacks were lost on restart. Rebuild them only after all sent
+  // requests have been counted and reconciled; launchers preserve eligibility
+  // and acquire ignores holders already queued by a retry above.
+  // ponytail: every unfinished session with scenes, and every unfinished narrated session, is a candidate and the
+  // launchers filter; add an index-backed query if boot time on a large store matters.
+  // run-session-end-to-end (JOS-195), design Decision 4 — a narrated session without scenes is a candidate so its
+  // decomposition can start; a session with no narration is deliberately not (the voice-over launcher would match it).
+  const candidateSessions = db.prepare(
+    `SELECT r.id AS runId FROM runs r
+     WHERE EXISTS (SELECT 1 FROM scenes s WHERE s.run_id = r.id AND s.status IN ('submitted', 'image-complete'))
+        OR (r.final_video_path IS NULL
+            AND (EXISTS (SELECT 1 FROM scenes s WHERE s.run_id = r.id)
+                 OR EXISTS (SELECT 1 FROM voice_overs v WHERE v.run_id = r.id)))`,
+  ).all() as Array<{ runId: string }>;
+  for (const { runId } of candidateSessions) {
+    if (admitLaunch(runId).admitted) relaunchPendingWork(runId);
+  }
+  return summary;
+}

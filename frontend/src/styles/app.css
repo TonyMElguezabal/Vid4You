@@ -1,0 +1,1628 @@
+/*
+ * Vid4You app styling ("Studio" direction, redesign-visual-design, JOS-198). Consumes tokens.css only — no
+ * colour, font or shadow literal belongs in this file beyond what a token already names (design Decisions 1-2, 7).
+ * Markup hooks are class names added to elements that already carried their accessible names.
+ *
+ * Motion is transform + opacity only, never blocks input, and is switched off under prefers-reduced-motion
+ * (last block). Entrances play on mount, so a live update never replays them for content already on screen.
+ */
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-md);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+p {
+  margin: 0;
+}
+
+h1,
+h2 {
+  text-wrap: balance;
+}
+
+a {
+  color: var(--color-accent);
+}
+
+code {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  overflow-wrap: anywhere;
+}
+
+svg {
+  flex: none;
+}
+
+:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--color-accent) 55%, transparent);
+  outline-offset: 2px;
+}
+
+[role="alert"] {
+  color: var(--color-status-failed);
+}
+
+.card {
+  background: var(--color-surface);
+  border-radius: var(--radius-card);
+  box-shadow: var(--extrude);
+}
+
+.eyebrow {
+  font-size: var(--font-size-xs);
+  font-weight: 550;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+
+/* ---------- Buttons: raised keys that sink when pressed ---------- */
+
+button,
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: 2.25rem;
+  padding: 0 var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: 500 var(--font-size-sm) / 1.2 var(--font-ui);
+  text-decoration: none;
+  cursor: pointer;
+  box-shadow: var(--extrude-sm);
+  transition:
+    transform 220ms var(--ease-spring),
+    box-shadow 220ms var(--ease-spring),
+    background-color 150ms;
+}
+
+button:hover:not(:disabled),
+.button:hover {
+  background: var(--color-surface-sunken);
+}
+
+button:active:not(:disabled),
+.button:active {
+  transform: translateY(2px);
+  box-shadow: var(--extrude-pressed);
+  transition-duration: 60ms;
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+button.primary,
+.button.primary {
+  border-color: transparent;
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  box-shadow:
+    inset 0 1px 0 var(--color-highlight),
+    0 3px 0 var(--color-edge-accent),
+    0 6px 14px var(--color-cast);
+}
+
+button.primary:hover:not(:disabled),
+.button.primary:hover {
+  background: color-mix(in srgb, var(--color-accent) 85%, var(--color-edge-accent));
+}
+
+button.primary:active:not(:disabled),
+.button.primary:active {
+  transform: translateY(3px);
+  box-shadow:
+    inset 0 1px 0 var(--color-highlight),
+    0 0 0 var(--color-edge-accent);
+}
+
+button.large,
+.button.large {
+  min-height: 2.75rem;
+  padding: 0 var(--space-5);
+  font-size: var(--font-size-md);
+}
+
+button.toggle {
+  align-self: flex-start;
+  min-height: 2rem;
+  padding: 0 var(--space-2);
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-accent);
+  box-shadow: none;
+}
+
+button.toggle:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+}
+
+button.toggle:active:not(:disabled) {
+  transform: scale(0.97);
+  box-shadow: none;
+}
+
+button.toggle .icon {
+  transition: transform 200ms var(--ease-spring);
+}
+
+button.toggle[aria-expanded="true"] .icon {
+  transform: rotate(90deg);
+}
+
+/* ---------- Icons ---------- */
+
+.icon-cutout {
+  stroke: var(--color-surface);
+}
+
+.icon-cutout-fill {
+  fill: var(--color-surface);
+}
+
+.icon-progress {
+  animation: spin 1s linear infinite;
+}
+
+/* ---------- Status pill ---------- */
+
+.status-complete {
+  --c: var(--color-status-complete);
+}
+
+.status-progress {
+  --c: var(--color-status-progress);
+}
+
+.status-failed {
+  --c: var(--color-status-failed);
+}
+
+.status-queued {
+  --c: var(--color-status-queued);
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.125rem 0.6rem 0.125rem 0.45rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--c) var(--tint-pill), var(--color-surface));
+  color: var(--c);
+  font-size: var(--font-size-xs);
+  font-weight: 550;
+  white-space: nowrap;
+}
+
+/* ---------- Callouts ---------- */
+
+.callout {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--c) var(--tint-callout), var(--color-surface));
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+}
+
+.callout > .icon {
+  margin-top: 0.15rem;
+  color: var(--c);
+}
+
+.callout [role="alert"] {
+  color: var(--color-text);
+}
+
+.callout-info {
+  --c: var(--color-status-queued);
+}
+
+.callout-failed {
+  --c: var(--color-status-failed);
+}
+
+.callout-warn {
+  --c: var(--color-status-progress);
+}
+
+.callout-body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+
+/* ---------- Top bar: a translucent material over scrolling content ---------- */
+
+.top-bar {
+  position: sticky;
+  top: env(safe-area-inset-top, 0px);
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-3) max(16px, var(--space-5));
+  background: var(--color-bar);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  box-shadow: 0 1px 0 var(--color-border);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 1.0625rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.brand-mark {
+  display: grid;
+  place-items: center;
+  width: 1.625rem;
+  height: 1.625rem;
+  border-radius: 7px;
+  background: var(--color-text);
+  color: var(--color-bg);
+}
+
+.connection {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-left: auto;
+  font-size: var(--font-size-sm);
+  color: var(--color-muted);
+}
+
+.connection-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--color-status-complete);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-status-complete) 22%, transparent);
+}
+
+.connection.connecting .connection-dot {
+  background: var(--color-status-queued);
+  box-shadow: none;
+  animation: breathe 1.4s ease-in-out infinite;
+}
+
+.top-bar > button {
+  margin-left: auto;
+}
+
+.connection + button {
+  margin-left: 0;
+}
+
+/* ---------- Version label (show-app-version, JOS-238) ---------- */
+
+.app-version {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-size-sm);
+  color: var(--color-muted);
+  user-select: text;
+}
+
+/* Alone with the wordmark (`/admin`), it goes to the right end; after other controls it already is there. */
+.brand + .app-version {
+  margin-left: auto;
+}
+
+/* Up to ~400 px a single line would leave the label a few pixels: it gets its own line (design Decision 4). */
+@media (max-width: 30rem) {
+  .top-bar {
+    flex-wrap: wrap;
+    gap: var(--space-1) var(--space-2);
+  }
+
+  .app-version {
+    flex-basis: 100%;
+    text-align: right;
+  }
+}
+
+/* ---------- Privacy dialog and update banner (add-observability-telemetry, JOS-199) ---------- */
+
+.top-bar > .privacy-button {
+  margin-left: auto;
+}
+
+.connection ~ .privacy-button,
+.top-bar > .privacy-button + button {
+  margin-left: 0;
+}
+
+.privacy-dialog {
+  width: min(32rem, calc(100vw - 2rem));
+  padding: var(--space-5);
+  border: 0;
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-text);
+  box-shadow: var(--extrude-lift);
+}
+
+.privacy-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.privacy-dialog h2 {
+  margin: 0 0 var(--space-3);
+  font-size: var(--font-size-lg);
+}
+
+.privacy-choice {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: var(--space-3);
+  margin-block: var(--space-3);
+}
+
+.privacy-choice input {
+  width: auto;
+  align-self: center;
+}
+
+.privacy-choice small {
+  grid-column: 2;
+  color: var(--color-muted);
+}
+
+.privacy-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+}
+
+.update-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) max(16px, var(--space-5));
+  background: color-mix(in srgb, var(--color-accent) var(--tint-callout), var(--color-surface));
+  box-shadow: 0 1px 0 var(--color-border);
+  font-size: var(--font-size-sm);
+}
+
+.update-banner button {
+  margin-left: auto;
+}
+
+.app-main {
+  max-width: 1240px;
+  margin: 0 auto;
+  padding-block: var(--space-5) 4rem;
+  padding-inline: max(16px, var(--space-5));
+}
+
+/* ---------- Start form ---------- */
+
+.start {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  max-width: 640px;
+  margin: var(--space-4) auto 0;
+}
+
+.start-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.start-head h1 {
+  font-size: var(--font-size-xl);
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: -0.025em;
+}
+
+.start-head p {
+  max-width: 52ch;
+  color: var(--color-muted);
+}
+
+/* cover-error-reporting (JOS-254) — the render-error fallback: the start form's card spacing, the button at its natural width. */
+.error-fallback {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-4);
+  padding: var(--space-5);
+}
+
+.start-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-5);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.field-hint {
+  font-size: var(--font-size-sm);
+  color: var(--color-muted);
+}
+
+.field label,
+.correction-form label {
+  font-size: var(--font-size-sm);
+  font-weight: 550;
+}
+
+input:not([type="radio"]):not([type="checkbox"]),
+textarea,
+select {
+  width: 100%;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid color-mix(in srgb, var(--color-text) 25%, transparent);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: var(--font-size-md) / 1.45 var(--font-ui);
+  transition:
+    border-color 150ms,
+    box-shadow 150ms;
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 25%, transparent);
+}
+
+textarea {
+  resize: vertical;
+}
+
+#project-title {
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.form-error {
+  font-size: var(--font-size-sm);
+}
+
+.form-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* ---------- Session layout: project panel beside the pipeline, stacked below 1024px ---------- */
+
+.session-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-5);
+  align-items: start;
+}
+
+@media (min-width: 1024px) {
+  .session-layout {
+    grid-template-columns: 20rem minmax(0, 1fr);
+  }
+
+  .project-panel {
+    position: sticky;
+    top: calc(env(safe-area-inset-top, 0px) + 4.5rem);
+  }
+}
+
+.session-loading,
+.session-not-found {
+  color: var(--color-muted);
+}
+
+.session-not-found {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  align-items: flex-start;
+}
+
+.project-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-5);
+  border-radius: var(--radius-card);
+  background: var(--color-surface);
+  box-shadow: var(--extrude);
+}
+
+.project-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.project-title {
+  font-size: var(--font-size-lg);
+  font-weight: 650;
+  line-height: 1.25;
+  letter-spacing: -0.015em;
+}
+
+.project-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-size-sm);
+  color: var(--color-muted);
+}
+
+.chip {
+  display: inline-block;
+  padding: 0 0.5rem;
+  border-radius: 6px;
+  background: var(--color-surface-sunken);
+  font-size: var(--font-size-xs);
+  font-weight: 500;
+  text-transform: uppercase;
+}
+
+.script-disclosure summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  color: var(--color-accent);
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  list-style: none;
+  cursor: pointer;
+}
+
+.script-disclosure summary::-webkit-details-marker {
+  display: none;
+}
+
+.script-disclosure summary .icon {
+  transition: transform 200ms var(--ease-spring);
+}
+
+.script-disclosure[open] summary .icon {
+  transform: rotate(90deg);
+}
+
+.script-disclosure .when-open,
+.script-disclosure[open] .when-closed {
+  display: none;
+}
+
+.script-disclosure[open] .when-open {
+  display: inline;
+}
+
+.session-script {
+  max-height: 14rem;
+  margin-top: var(--space-2);
+  padding: var(--space-3);
+  overflow-y: auto;
+  border-radius: var(--radius-control);
+  background: var(--color-surface-sunken);
+  color: var(--color-muted);
+  font-size: var(--font-size-sm);
+  white-space: pre-wrap;
+}
+
+.script-disclosure[open] .session-script {
+  animation: unfold 380ms var(--ease-spring);
+}
+
+.session-header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-border);
+}
+
+.session-state-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* distinguish-paused-session (JOS-153), design Decision 7 — its own class, coloured with the queued token;
+ * never the complete or failed colour, so the pill (the state's class) carries that. */
+.session-paused-marker {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: 550;
+  color: var(--color-status-queued);
+}
+
+.session-running-line,
+.held-stages {
+  font-size: var(--font-size-sm);
+  color: var(--color-muted);
+}
+
+.session-header > button {
+  width: 100%;
+}
+
+.scenes-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+/* summarise-scene-progress (JOS-234) — a compact two-column list under the bar; the numbers wrap inside the panel. */
+.scene-progress dl {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: var(--font-size-xs);
+}
+
+.scene-progress-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.scene-progress-line dt {
+  color: var(--color-muted);
+}
+
+.scene-progress-line dd {
+  margin: 0;
+  text-align: right;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+
+.scenes-progress-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: var(--font-size-xs);
+  color: var(--color-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+progress {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  height: 0.375rem;
+  border: 0;
+  border-radius: 3px;
+  background: var(--color-surface-sunken);
+  overflow: hidden;
+}
+
+progress::-webkit-progress-bar {
+  background: var(--color-surface-sunken);
+}
+
+progress::-webkit-progress-value {
+  background: var(--color-accent);
+  border-radius: 3px;
+  transition: width 400ms var(--ease-spring);
+}
+
+progress::-moz-progress-bar {
+  background: var(--color-accent);
+  border-radius: 3px;
+}
+
+.session-id {
+  font-size: var(--font-size-xs);
+  color: var(--color-muted);
+}
+
+/* ---------- Pipeline: stepper, phase cards ---------- */
+
+.pipeline {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.phase-stepper {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr));
+  gap: var(--space-2);
+}
+
+.phase-step {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  min-width: 0;
+  padding: var(--space-3);
+  border-radius: 10px;
+  background: var(--color-surface);
+  box-shadow: var(--extrude-sm);
+}
+
+.phase-step::after {
+  content: "";
+  height: 3px;
+  margin-top: 0.125rem;
+  border-radius: 2px;
+  background: var(--c);
+}
+
+.phase-step.status-queued::after {
+  opacity: 0.3;
+}
+
+.phase-step-top {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  color: var(--c);
+}
+
+.phase-step-name {
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.phase-step-status {
+  color: var(--c);
+  font-size: var(--font-size-xs);
+  font-weight: 550;
+}
+
+.phase-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5) var(--space-5);
+}
+
+.phase-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.phase-heading {
+  font-size: 1.0625rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.phase-held {
+  font-size: var(--font-size-sm);
+}
+
+.phase-stages {
+  margin: 0;
+  padding-left: 1.1rem;
+  font-size: var(--font-size-sm);
+  color: var(--color-muted);
+}
+
+/* ---------- Scene cards ---------- */
+
+.scenes-not-yet-available {
+  font-size: var(--font-size-sm);
+  color: var(--color-muted);
+}
+
+.scene-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(11.5rem, 1fr));
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.scene-row {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  background: var(--color-surface);
+  box-shadow: var(--extrude);
+  transition:
+    transform 260ms var(--ease-spring),
+    box-shadow 260ms var(--ease-spring);
+}
+
+.scene-row:hover {
+  transform: translateY(-3px);
+  box-shadow: var(--extrude-lift);
+}
+
+.scene-row.open {
+  grid-column: 1 / -1;
+  box-shadow: var(--extrude-lift);
+}
+
+.scene-row.open:hover {
+  transform: none;
+}
+
+.scene-row.status-failed {
+  border-color: color-mix(in srgb, var(--color-status-failed) 45%, var(--color-border));
+}
+
+.scene-thumb {
+  position: relative;
+  display: grid;
+  place-items: center;
+  max-width: 100%;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  background: var(--color-surface-sunken);
+  color: var(--color-muted);
+}
+
+.scene-thumb img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.scene-thumb.shimmer::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(100deg, transparent 30%, color-mix(in srgb, var(--color-surface) 55%, transparent) 50%, transparent 70%);
+  background-size: 200% 100%;
+  animation: shimmer 1.6s linear infinite;
+}
+
+.scene-index {
+  position: absolute;
+  top: 0.5rem;
+  left: 0.5rem;
+  padding: 0 0.45rem;
+  border-radius: 6px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  box-shadow: var(--extrude-sm);
+  font-size: var(--font-size-xs);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.scene-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+}
+
+.scene-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.scene-duration {
+  font-size: var(--font-size-xs);
+  color: var(--color-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.scene-held,
+.scene-generating {
+  font-size: var(--font-size-xs);
+  color: var(--color-muted);
+}
+
+.scene-error {
+  font-size: var(--font-size-sm);
+}
+
+.scene-details {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(17rem, 100%), 1fr));
+  gap: var(--space-5);
+  padding: var(--space-2) var(--space-4) var(--space-5);
+  transform-origin: top center;
+  animation: open-details 520ms var(--ease-spring) backwards;
+}
+
+.scene-media,
+.scene-info {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  align-items: flex-start;
+  animation: pop-in 420ms var(--ease-spring) backwards;
+}
+
+.scene-info {
+  animation-delay: 140ms;
+}
+
+.scene-info dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--space-1) var(--space-4);
+  width: 100%;
+  margin: 0;
+  font-size: var(--font-size-sm);
+}
+
+.scene-info dt {
+  color: var(--color-muted);
+}
+
+.scene-info dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.stage-diagnostic {
+  font-size: var(--font-size-sm);
+  color: var(--color-muted);
+}
+
+.scene-image,
+.scene-clip {
+  max-width: 100%;
+  border-radius: 10px;
+  background: var(--color-surface-sunken);
+  object-fit: contain;
+}
+
+.scene-clip {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+}
+
+.correction-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-4);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-status-failed) var(--tint-callout), var(--color-surface));
+}
+
+.correction-form > button {
+  align-self: flex-start;
+}
+
+.download-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.final-video {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.final-video-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.final-video-version {
+  font-size: var(--font-size-sm);
+  color: var(--color-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.final-video-note {
+  font-size: var(--font-size-sm);
+  color: var(--color-muted);
+}
+
+/* adjust-scene-pause (JOS-190) — the dial for the silence after a scene, inside an expanded scene card. */
+.pause-dial {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: 100%;
+}
+
+.pause-dial label {
+  font-size: var(--font-size-sm);
+  font-weight: 550;
+}
+
+.pause-dial-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.pause-dial-row input {
+  width: 6.5rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.pause-unit {
+  color: var(--color-muted);
+  font-size: var(--font-size-sm);
+}
+
+.pause-range,
+.pause-note {
+  font-size: var(--font-size-xs);
+  color: var(--color-muted);
+}
+
+.final-video-pending {
+  font-size: var(--font-size-sm);
+  color: var(--color-muted);
+}
+
+/* ---------- Motion ---------- */
+
+/* Entrances play when a node mounts, staggered by position, so live updates never replay them. */
+.pop {
+  animation: pop-in 480ms var(--ease-spring) backwards;
+  animation-delay: var(--pop-delay, 0ms);
+}
+
+.pop:nth-child(2) {
+  --pop-delay: 55ms;
+}
+
+.pop:nth-child(3) {
+  --pop-delay: 110ms;
+}
+
+.pop:nth-child(4) {
+  --pop-delay: 165ms;
+}
+
+.pop:nth-child(5) {
+  --pop-delay: 220ms;
+}
+
+.pop:nth-child(6) {
+  --pop-delay: 275ms;
+}
+
+.pop:nth-child(7) {
+  --pop-delay: 330ms;
+}
+
+.pop:nth-child(8) {
+  --pop-delay: 385ms;
+}
+
+.pop:nth-child(n + 9) {
+  --pop-delay: 440ms;
+}
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.97);
+  }
+}
+
+/* A scene's details open from the card's top edge with a small overshoot. */
+@keyframes open-details {
+  from {
+    opacity: 0;
+    clip-path: inset(0 0 100% 0);
+    transform: perspective(900px) rotateX(-8deg) scale(0.98);
+  }
+  60% {
+    opacity: 1;
+    clip-path: inset(0);
+    transform: perspective(900px) rotateX(1.5deg);
+  }
+}
+
+@keyframes unfold {
+  from {
+    opacity: 0;
+    clip-path: inset(0 0 100% 0);
+    transform: translateY(-8px);
+  }
+}
+
+@keyframes shimmer {
+  from {
+    background-position: 150% 0;
+  }
+  to {
+    background-position: -50% 0;
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes breathe {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  button:active:not(:disabled),
+  .button:active,
+  .scene-row:hover {
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .top-bar {
+    background: var(--color-bg);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}
+
+/* ---------- Reference image preview (admin-visual-style-prompt, JOS-201) ---------- */
+
+.reference-preview {
+  max-width: 100%;
+  max-height: 20rem;
+  object-fit: contain;
+  border-radius: var(--radius-control);
+}
+
+/* show-video-request-status (JOS-200) — the request sent for a clip that is still generating. */
+.video-request {
+  display: grid;
+  gap: var(--space-2, 0.5rem);
+  font-size: var(--font-size-sm);
+}
+
+/* show-clip-task-liveness (JOS-233) — a long provider task id wraps inside the details instead of widening them. */
+.video-request-task-id {
+  overflow-wrap: anywhere;
+}
+
+.video-request-json {
+  margin: 0;
+  padding: 0.75rem;
+  overflow-x: auto;
+  border-radius: 10px;
+  background: var(--color-surface-sunken);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ---------- /admin: tabs, tables, panels, rows (admin-tabs-and-tables, JOS-270) ---------- */
+
+.start.admin-wide {
+  max-width: 72rem;
+}
+
+.tabs {
+  display: flex;
+  gap: var(--space-1);
+  overflow-x: auto;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.tabs [role="tab"] {
+  flex: none;
+  min-height: 2.5rem;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  border-radius: var(--radius-control) var(--radius-control) 0 0;
+  background: none;
+  box-shadow: none;
+  color: var(--color-muted);
+}
+
+.tabs [role="tab"][aria-selected="true"] {
+  border-bottom-color: var(--color-accent);
+  color: var(--color-text);
+  font-weight: 650;
+}
+
+.tab-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  padding-top: var(--space-4);
+}
+
+.tab-panel > section {
+  gap: var(--space-4);
+}
+
+.tab-panel > section + section {
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--color-border);
+}
+
+/* The period: radios inside a segmented control (the radio itself is hidden, its label is the key). */
+.segmented {
+  position: relative;
+  align-self: flex-start;
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  align-items: center;
+  margin: 0;
+  padding: var(--space-1);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-sunken);
+}
+
+.segmented legend {
+  /* The fieldset keeps its name for a screen reader; the four choices explain themselves on screen. */
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+
+.segmented label {
+  position: relative;
+  padding: var(--space-1) var(--space-3);
+  border-radius: calc(var(--radius-control) - 2px);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+
+.segmented label:has(input:checked) {
+  background: var(--color-surface);
+  box-shadow: var(--extrude-sm);
+  font-weight: 650;
+}
+
+.segmented label:has(input:focus-visible) {
+  outline: 3px solid color-mix(in srgb, var(--color-accent) 55%, transparent);
+}
+
+.segmented input[type="radio"] {
+  position: absolute;
+  opacity: 0;
+  inset: 0;
+  margin: 0;
+  cursor: pointer;
+}
+
+.segmented-dates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.segmented-dates label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-size-sm);
+}
+
+.segmented-dates input {
+  width: auto;
+}
+
+.table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--font-size-sm);
+}
+
+.data-table caption {
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+  font-weight: 650;
+  color: var(--color-text);
+}
+
+.data-table th,
+.data-table td {
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--color-border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.data-table thead th {
+  color: var(--color-muted);
+  font-weight: 550;
+  background: var(--color-surface-sunken);
+}
+
+.data-table .num {
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.data-table tbody th[scope="row"],
+.data-table td:first-child {
+  background: var(--color-surface);
+}
+
+.data-table .sticky-first {
+  position: sticky;
+  left: 0;
+}
+
+.table-note {
+  margin: var(--space-2) 0 0;
+  font-size: var(--font-size-xs);
+  color: var(--color-muted);
+}
+
+.na {
+  color: var(--color-muted);
+}
+
+.summary-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
+  gap: var(--space-3);
+  margin: 0;
+}
+
+.summary-tiles > div {
+  display: flex;
+  flex-direction: column-reverse;
+  gap: var(--space-1);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-sunken);
+}
+
+.summary-tiles dt {
+  font-size: var(--font-size-xs);
+  font-weight: 550;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-muted);
+}
+
+.summary-tiles dd {
+  margin: 0;
+  font-size: var(--font-size-lg);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.report-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.report-panel > summary {
+  cursor: pointer;
+  font-weight: 650;
+  padding: var(--space-2) 0;
+}
+
+.report-panel[open] > summary {
+  margin-bottom: var(--space-2);
+}
+
+.active-row {
+  display: grid;
+  grid-template-columns: minmax(7rem, 9rem) minmax(10rem, 22rem) auto;
+  gap: var(--space-1) var(--space-4);
+  align-items: center;
+}
+
+.active-row .badge {
+  justify-self: start;
+}
+
+.active-row label {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  font-weight: 550;
+}
+
+.active-row [role="status"] {
+  grid-column: 2 / -1;
+}
+
+@media (max-width: 640px) {
+  .active-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .active-row [role="status"] {
+    grid-column: auto;
+  }
+}
+
+.badge {
+  display: inline-block;
+  padding: 0.1rem var(--space-2);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-accent) var(--tint-pill), var(--color-surface));
+  color: var(--color-text);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+}
+
+.badge-muted {
+  background: var(--color-surface-sunken);
+  color: var(--color-muted);
+}
+
+.stage-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+}
+
+.stage-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.stage-card-head h3 {
+  margin: 0;
+}
+
+.provider-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.provider-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-3) 0;
+  border-top: 1px solid var(--color-border);
+}
+
+.provider-row:first-child {
+  border-top: 0;
+}
+
+.provider-row .provider-main {
+  display: flex;
+  flex: 1 1 14rem;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-3);
+  min-width: 0;
+}
+
+.provider-row .provider-extra {
+  flex: 1 1 100%;
+}
+
+.row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.menu {
+  position: relative;
+}
+
+.menu > summary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2.25rem;
+  min-height: 2.25rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  cursor: pointer;
+  list-style: none;
+  box-shadow: var(--extrude-sm);
+}
+
+.menu > summary::-webkit-details-marker {
+  display: none;
+}
+
+.menu-items {
+  position: absolute;
+  right: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 12rem;
+  margin-top: var(--space-1);
+  padding: var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  box-shadow: var(--extrude);
+}
+
+.menu-items button {
+  justify-content: flex-start;
+  width: 100%;
+  box-shadow: none;
+}

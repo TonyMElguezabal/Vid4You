@@ -1,0 +1,155 @@
+# image-failure-recovery Specification
+
+## Purpose
+Retrying a scene's failed image, or correcting only its `IMAGE` instruction and retrying (PRD §3, §10.2, §10.3 image row, §11.2, §12.3, AC09; US-25). The image stage is owned by `image-generation` (US-12), scene details by `scene-detail-view` (US-19), and retry cycles by `stage-retry-policy` (US-22). Established by `retry-or-correct-image` (JOS-157).
+## Requirements
+### Requirement: Scene commands act only within their session
+
+`POST /sessions/:sessionId/scenes/:sceneId/retry` and `POST /sessions/:sessionId/scenes/:sceneId/correct` SHALL look up the scene by both identifiers. An unknown session, an unknown scene, or a scene that belongs to another session SHALL answer 404 identically, and SHALL change nothing and launch nothing (§12.3, AC22).
+
+#### Scenario: Scene of another session
+
+- **GIVEN** session A with a failed scene S, and session B
+- **WHEN** a retry or a correction is requested at `/sessions/B/scenes/S/…`
+- **THEN** the command answers 404, and scene S is unchanged and not launched
+
+### Requirement: A failed image can be retried with the same instruction and provider
+
+A retry SHALL be accepted only for a scene that is `failed` with no stored image. An accepted retry SHALL return the scene to `submitted` and launch its image stage. The stage SHALL send the scene's stored `IMAGE` instruction unchanged, to the image provider bound on the scene's first image attempt, without binding or switching it (§10.3, §11.2). The retry SHALL open a fresh retry budget for the image stage (§10.2). The retry SHALL go through the launch gate, so a paused session holds it with the scene in `submitted`.
+
+#### Scenario: Retry sends the same instruction
+
+- **GIVEN** a scene `failed` at the image stage with `IMAGE` "A lighthouse at dusk, oil painting"
+- **WHEN** the User retries it
+- **THEN** the command answers 200, and the image provider receives exactly "A lighthouse at dusk, oil painting"
+
+#### Scenario: Retry uses the bound provider
+
+- **GIVEN** a scene whose first image attempt bound provider A, and whose configured default is now provider B
+- **WHEN** the User retries it
+- **THEN** the request goes to provider A and the scene's binding is still A
+
+#### Scenario: Fresh budget
+
+- **GIVEN** a scene `failed` after exhausting its image attempts
+- **WHEN** the User retries it and the next attempts fail transiently
+- **THEN** it gets a full budget of attempts again before it returns to `failed`
+
+#### Scenario: Concurrent retries
+
+- **GIVEN** a scene `failed` at the image stage
+- **WHEN** two retry requests arrive at once
+- **THEN** exactly one answers 200, the other answers 409 with `not-failed`, and the image stage is launched once
+
+### Requirement: A correction changes only `IMAGE`
+
+A correction SHALL be accepted only for a scene that is `failed` with no stored image, with a body `{ instruction }` whose trimmed value is not empty. In one write that applies only while those conditions hold, it SHALL set the scene's `IMAGE` instruction to the trimmed value and return the scene to `submitted`. Its next image attempt SHALL send the corrected instruction. The correction SHALL NOT change any of: the scene's `ID`, `PROMPT`, `VIDEO` instruction, narration interval, requested duration, speed factor, bound provider, or position in the narrative order, nor any other scene (§3, §10.3, AC09). A scene created without an `IMAGE` instruction (the skeleton stub stage) SHALL have its stage's legacy instruction corrected instead.
+
+#### Scenario: Correct and retry
+
+- **GIVEN** a scene `failed` at the image stage
+- **WHEN** the User corrects its instruction to "  A lighthouse at night  "
+- **THEN** the command answers 200, the scene's `IMAGE` is "A lighthouse at night", and the image provider receives "A lighthouse at night"
+
+#### Scenario: Only `IMAGE` changes
+
+- **GIVEN** a scene `failed` at the image stage, with its other fields recorded
+- **WHEN** the User corrects its instruction
+- **THEN** its `ID`, `PROMPT`, `VIDEO`, narration interval, requested duration, speed factor and bound provider are unchanged
+- **AND** every other scene of the session is unchanged and the scene order is the same
+
+#### Scenario: Blank instruction
+
+- **WHEN** a correction is requested with an instruction that is empty or only whitespace
+- **THEN** the command answers 400 and the scene is unchanged
+
+#### Scenario: Extra field in the correction body
+
+- **WHEN** a correction is requested with a body field other than `instruction`
+- **THEN** the extra field is ignored and the command proceeds as if it were absent, following the same "an operation ignores locked fields" rule every other chunk-mutating route uses
+
+### Requirement: No image action once the image succeeded
+
+An image-stage retry or correction SHALL be refused with 409 for a scene that is not `failed` (`not-failed`), and SHALL NOT change the image instruction or launch the image stage for a failed scene whose image has already succeeded. When such a scene is failed at the video stage, the shared retry and correction commands SHALL dispatch to clip recovery as specified by `clip-failure-recovery`; they SHALL NOT be refused as `image-already-generated` solely because the image exists. A refusal SHALL change nothing and launch nothing. The page SHALL NOT offer image retry or `IMAGE` correction for a video-stage failure (§3, AC09).
+
+#### Scenario: Failed clip is routed to clip recovery
+- **GIVEN** a scene whose image is stored and whose video stage failed
+- **WHEN** the User requests retry or correction through the existing scene recovery command
+- **THEN** the command is handled by clip recovery and does not change or regenerate the image
+
+#### Scenario: Image generated, scene still processing
+- **GIVEN** a scene in `image-complete`, `video-generating` or `chunk-complete`
+- **WHEN** an image-stage retry or correction is requested
+- **THEN** the command answers 409 with `not-failed`
+
+#### Scenario: No image action on a clip failure
+- **GIVEN** a scene failed at the video stage
+- **WHEN** its details are shown
+- **THEN** no image retry button and no `IMAGE` correction form are shown
+
+### Requirement: The page shows and edits the `IMAGE` instruction
+
+The scene details SHALL show the scene's `PROMPT`, `IMAGE` and `VIDEO`. For a scene failed at the image stage, the correction form SHALL be pre-filled with the current `IMAGE` instruction. A refusal (404 or 409) SHALL be shown on the scene's row as a readable sentence. The scene's new state SHALL come from the live update.
+
+#### Scenario: Form pre-filled with `IMAGE`
+
+- **GIVEN** a scene `failed` at the image stage with `IMAGE` "A lighthouse at dusk"
+- **WHEN** the User expands its details
+- **THEN** the correction form is pre-filled with "A lighthouse at dusk", and `PROMPT` and `VIDEO` are shown read-only
+
+#### Scenario: Refusal shown
+
+- **GIVEN** a retry answered 409 with `not-failed`
+- **WHEN** the answer arrives
+- **THEN** the row shows a sentence saying the scene is no longer failed
+
+### Requirement: Failed images are retried once automatically when the session's scene work goes idle
+
+When a session has no scene left waiting, generating its image, or generating its clip, and at least one scene failed at the image stage for a reason a retry can fix, the system SHALL give each such scene one new retry cycle, exactly as a manual retry with the same instruction and bound provider would. This sweep SHALL run at most once per session; the fact that it ran SHALL be stored so that a restart does not run it again. It SHALL NOT run while the session is paused; a paused session is swept once it continues and its scene work is idle.
+
+A failure a retry can fix is one that ended with a transient cause: an exhausted retry cycle, the image request ceiling, or a passed start window. A not-retryable failure (rejected reference image, missing API key, no adapter for the bound provider, invalid input) SHALL NOT be swept. A scene whose image succeeded and whose clip failed SHALL NOT be swept.
+
+#### Scenario: Fixable image failures are swept
+
+- **GIVEN** a session whose last generating scene just finished, with scenes 3 and 7 `failed` after an exhausted image cycle and scene 5 `failed` at the image request ceiling
+- **WHEN** the session's scene work goes idle
+- **THEN** scenes 3, 5 and 7 each start a new retry cycle with their stored instruction and bound provider
+- **AND** the session stays in scene processing
+
+#### Scenario: A not-retryable failure is not swept
+
+- **GIVEN** a session whose scene 4 `failed` because the provider rejected the reference image
+- **WHEN** the session's scene work goes idle
+- **THEN** scene 4 stays `failed` and is not resent
+
+#### Scenario: A clip failure is not swept
+
+- **GIVEN** a session whose scene 2 has a stored image and `failed` at the clip stage
+- **WHEN** the session's scene work goes idle
+- **THEN** scene 2 stays `failed`
+
+#### Scenario: The sweep runs only once
+
+- **GIVEN** a session that was already swept
+- **WHEN** swept scenes fail again and the scene work goes idle
+- **THEN** no second sweep runs
+- **AND** the session is `failed` with `failedPhase: "scenes"`
+
+#### Scenario: Sessions that failed before the sweep existed are not swept
+
+- **GIVEN** a session that already had a failed scene when the application was upgraded
+- **WHEN** the application starts
+- **THEN** no scene of that session is resent
+- **AND** the session is treated as already swept
+
+#### Scenario: A restart does not repeat the sweep
+
+- **GIVEN** a session that was swept
+- **WHEN** the application restarts and the session's scene work is idle with failed scenes
+- **THEN** no sweep runs
+
+#### Scenario: A paused session is swept after it continues
+
+- **GIVEN** a paused session whose scene work is idle with a fixable image failure
+- **WHEN** the User continues the session
+- **THEN** the sweep runs for that scene

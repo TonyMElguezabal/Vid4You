@@ -1,0 +1,455 @@
+// Domain types for the walking skeleton. Deliberately narrow: one generic
+// provider-backed stage ("IMAGE") stands in for the PRD's five stages, since
+// the experiments prove mechanisms (retry, concurrency, resumption,
+// idempotency, live push, pause/continue, correction, session/scene state
+// shape), not the full five-stage product state machine.
+//
+// State names below are the REAL PRD vocabulary (§8.1, §8.2), not
+// skeleton-invented labels, so the event contract this change (JOS-183) and
+// the frontend (JOS-180) build against is the real one. Only the subset of
+// values a single generic stage can actually reach is ever produced:
+// SceneState never reaches "video-generating" (there is no second real
+// stage), and SessionState never reaches the voice/decomposition phases
+// (those aren't modelled either). This is recorded as an explicit
+// simplification, not silently passed off as the full model.
+
+export const STAGE = "image" as const;
+export type Stage = typeof STAGE;
+
+/** PRD §8.2 — the six chunk states. This skeleton only ever produces
+ * "submitted", "image-generating", "chunk-complete" and "failed". */
+export type SceneState =
+  | "submitted"
+  | "image-generating"
+  | "image-complete"
+  | "video-generating"
+  | "chunk-complete"
+  | "failed";
+
+/** PRD §8.1 — the eight session states. This skeleton only ever produces
+ * "chunks-processing", "final-video" and "failed" (no voice/decomposition
+ * phases are modelled). */
+export type SessionState =
+  | "submitted"
+  | "voice-over-generating"
+  | "voice-over-complete"
+  | "chunk-decomposing"
+  | "chunks-processing"
+  | "final-video-generating"
+  | "final-video"
+  | "failed";
+
+export interface Run {
+  id: string;
+  title: string;
+  /** PRD §4.2/D10 — write-once from registration onward (start-video-project, JOS-134, Decision 2). Stored exactly as submitted, never trimmed (Decision 1). */
+  script: string;
+  createdAt: string;
+  /** PRD §9 — a marker on top of the current state, never a state itself. */
+  paused: boolean;
+  /** PRD §4.1 — selected from the hardcoded supported list; no provider is called before it's set. */
+  language: string;
+  /** PRD §12.2 — the real per-project folder name under `PROJECTS_ROOT`, derived from title + creation time to the minute. */
+  projectFolder: string;
+  /** PRD §11.2 — the voice provider bound on the first voice attempt; write-once (generate-voice-over, JOS-136, Decision 3). */
+  voiceProviderId: string | null;
+  /** change-active-provider-from-admin (JOS-171): bound once at the first decomposition / alignment attempt. */
+  decompositionProviderId: string | null;
+  alignmentProviderId: string | null;
+  /** The phase failure the session carries when it is `failed` (generate-voice-over, JOS-136, Decision 9; assign-scene-identifiers, JOS-144, Decision 6). */
+  failure: SessionFailure | null;
+  /** The relative path of the assembled MP4 in the project folder; null until assembly succeeds (assemble-final-video, JOS-149). */
+  finalVideoPath: string | null;
+  /**
+   * adjust-scene-pause (JOS-190), Decision 6 — set when the User asked for a rebuild that has not finished (it may be
+   * held by a pause); cleared when the rebuild succeeds or ends in failure. Survives a restart.
+   */
+  rebuildRequestedAt: string | null;
+  /** rebuild-scene (JOS-235), Decision 5 — a scene was rebuilt after the current final video was built; cleared when a rebuild of the final video succeeds. */
+  finalVideoStale: boolean;
+  /** admin-visual-style-prompt (JOS-201), Decision 4 — the `/admin` style prompt copied at creation; decomposition, its retries and recovery read this, never the live setting. */
+  visualStylePrompt: string;
+  /** use-reference-image-in-generation (JOS-202), Decision 3 — the `/admin` reference image copied into the project folder at creation (`path` is relative to it); every image request of the session carries it. */
+  referenceImage: { path: string; contentType: string; sha256: string } | null;
+}
+
+/** Design Decision 9 (generate-voice-over, JOS-136) — what the session carries when the voice-over failed. */
+/** assign-scene-identifiers (JOS-144) Decision 6 — an invalid system-generated decomposition (PRD §6, §6.1), attributed to the system, never to the User's script. */
+export interface DecompositionFailure {
+  phase: "decomposition";
+  /** Written for a person; never blames the script, never contains credentials or raw provider payloads. */
+  cause: string;
+  retryable: boolean;
+  /** Whether the User can start a new cycle (bounded-retry-policy, JOS-184). */
+  manualRetryAvailable: boolean;
+  /** The cycle the failure ended, from 1. */
+  cycle: number;
+  /** Attempts the cycle held when it failed, 1 to 4. */
+  attemptsInCycle: number;
+  /** ISO-8601 instant. */
+  occurredAt: string;
+}
+
+export type SessionFailure = VoiceOverFailure | DecompositionFailure | AssemblyFailure;
+
+/** retry-final-assembly (JOS-159), design Decision 1 — the voice-over, images and clips a failed assembly keeps
+ * are never regenerated; the cause always says so. */
+export interface AssemblyFailure {
+  phase: "assembly";
+  /** Written for a person; never a filesystem path outside the project-relative name. Always ends with "Your
+   * narration, images and clips are kept." */
+  cause: string;
+  retryable: boolean;
+  /** Always `true` (design Decision 7) — nothing generated is at risk, so retry is offered whatever `retryable`
+   * is, unlike the voice-over and decomposition failures below. */
+  manualRetryAvailable: boolean;
+  /** The cycle the failure ended, from 1. `1` with `attemptsInCycle: 0` for a failure recorded before any attempt
+   * (no tool, no voice-over, a missing clip file). */
+  cycle: number;
+  /** Attempts the cycle held when it failed, 0 to 4. */
+  attemptsInCycle: number;
+  /** ISO-8601 instant. */
+  occurredAt: string;
+}
+
+export interface VoiceOverFailure {
+  phase: "voice-over";
+  /** Written for a person; never contains credentials or the script text. */
+  cause: string;
+  retryable: boolean;
+  /** Whether the User can start a new cycle (bounded-retry-policy, JOS-184). */
+  manualRetryAvailable: boolean;
+  /** The cycle the failure ended, from 1. */
+  cycle: number;
+  /** Attempts the cycle held when it failed, 1 to 4. */
+  attemptsInCycle: number;
+  /** ISO-8601 instant. */
+  occurredAt: string;
+}
+
+/** The session's single narration (generate-voice-over, JOS-136, Decisions 6 and 8). Paths are relative to the session's project folder (§12.2). */
+export interface VoiceOverInput {
+  runId: string;
+  audioPath: string;
+  /** The provider's native timestamps, stored raw and uninterpreted; null when it returned none. */
+  timestampsPath: string | null;
+  /** Measured from the stored MP3, not the provider's claim (Decision 7). */
+  durationSeconds: number;
+  sizeBytes: number;
+  nativeTimestampsAvailable: boolean;
+  providerRequestId: string | null;
+  completedAt: string;
+}
+
+export type VoiceOver = VoiceOverInput;
+
+/**
+ * Stages that record attempts, including session-level and scene-level stages. Exported as an array (not only a
+ * union) so `sessionRunningWork` (distinguish-paused-session, JOS-153) can map every value to a pipeline stage and
+ * a test can assert the mapping is total, instead of relying on a compile-time check alone.
+ */
+export const ATTEMPT_STAGES = ["voice-over", "timestamps", "decomposition", "image", "video", "assembly"] as const;
+export type AttemptStage = (typeof ATTEMPT_STAGES)[number];
+
+/** How the narration timestamps were obtained (PRD §11.1). */
+export type TimestampMechanism = "native" | "alignment";
+
+/** The narration timestamps of a session, stored once (obtain-narration-timestamps, JOS-139, Decision 7). `path` is relative to the project folder. */
+export interface NarrationTimestampsInput {
+  runId: string;
+  mechanism: TimestampMechanism;
+  path: string;
+  characterCount: number;
+  obtainedAt: string;
+}
+
+export type NarrationTimestamps = NarrationTimestampsInput;
+
+/** `scheduled`: an automatic retry that is persisted with its due time and not yet sent (bounded-retry-policy, Decision 9). */
+/**
+ * stage-execution-time-limit (JOS-185): `timed-out` is a sent attempt that outlasted its stage's maximum time; its
+ * result may still arrive and then becomes `late-success` (accepted) or `superseded` (discarded). `cancelled` is a
+ * scheduled retry that was never sent because a late result made it unnecessary.
+ */
+export const STAGE_ATTEMPT_OUTCOMES = [
+  "scheduled",
+  "in-flight",
+  "success",
+  "transient",
+  "not-retryable",
+  "timed-out",
+  "late-success",
+  "superseded",
+  "cancelled",
+] as const;
+export type StageAttemptOutcome = (typeof STAGE_ATTEMPT_OUTCOMES)[number];
+
+export type AttemptTrigger = "initial" | "automatic" | "manual";
+
+/** One provider call, written before the request is sent (Decision 2) and never rewritten except to record its outcome. */
+export interface StageAttempt {
+  id: string;
+  runId: string;
+  stage: AttemptStage;
+  /** Set for the scene-level stages (image, video); null for the session-level ones. */
+  sceneId: string | null;
+  /** The budget this attempt counts against (bounded-retry-policy, Decision 1). */
+  stageInstanceKey: string;
+  /** Starts at 1; a manual retry opens the next one. */
+  cycle: number;
+  /** 1 to 4 within the cycle; the store rejects a fifth. */
+  sequenceInCycle: number;
+  trigger: AttemptTrigger;
+  /** Null for a stage with no external provider (assembly, JOS-149). */
+  providerId: string | null;
+  /** Sequence across the session's stage, from 1, continuing through cycles. */
+  attemptNumber: number;
+  queuedAt: string;
+  /** Null while the attempt is only scheduled. */
+  sentAt: string | null;
+  /** When a scheduled attempt becomes due; null otherwise. */
+  dueAt: string | null;
+  outcome: StageAttemptOutcome;
+  finishedAt: string | null;
+  externalRequestId: string | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  /** When a result arrived for an attempt that had already timed out; null otherwise. */
+  lateResultAt: string | null;
+}
+
+/** PRD §3 narration interval: where a chunk sits in the voice-over, in seconds. */
+export interface NarrationInterval {
+  startSeconds: number;
+  endSeconds: number;
+}
+
+/** request-admitted-clip-duration (JOS-147) — the one duration-warning value ever recorded; §6.1.1's unsplittable-sentence case. */
+export type DurationWarning = "exceeds-maximum";
+
+/** record-speed-adjustment-factor (JOS-148) — the one speed-factor-warning value ever recorded; the factor exceeds `SPEED_FACTOR_LIMIT` (§7.2). */
+export type SpeedFactorWarning = "exceeds-limit";
+
+/** show-video-request-status (JOS-200) Decision 2 — what the page may show of a clip request: an allow-list, never the adapter's whole body. */
+export interface VideoRequestBody {
+  prompt: string;
+  duration: number;
+  resolution: string;
+  /** The scene's image, named; never the provider's upload URL. */
+  firstFrame: string;
+}
+
+export interface Scene {
+  id: string;
+  runId: string;
+  index: number;
+  status: SceneState;
+  attempts: number;
+  lastError: string | null;
+  result: string | null;
+  updatedAt: string;
+  /** The skeleton image stage's input, correctable only while the affected stage is `failed` (PRD §10.3). Registration sets it to `imageInstruction`; JOS-145 retires it (assign-scene-identifiers, JOS-144, Decision 3). */
+  instruction: string;
+  /** PRD §3 `PROMPT`: the fragment of the script this scene narrates, unchanged. Locked once registered. */
+  prompt: string;
+  /** PRD §3 `IMAGE`: the instruction to generate the scene's image. */
+  imageInstruction: string;
+  /** PRD §3 `VIDEO`: the instruction to animate the image. */
+  videoInstruction: string;
+  /** PRD §3 narration interval, in seconds; null for a scene created without a decomposition. Locked once registered (assign-narration-intervals, JOS-143). */
+  narrationInterval: NarrationInterval | null;
+  /** The admitted clip duration requested for this chunk (PRD §7.2); null for a scene created without a decomposition. Locked once registered (request-admitted-clip-duration, JOS-147). */
+  requestedDurationSeconds: number | null;
+  /** Set only when the interval was narrated longer than the largest admitted duration (§6.1.1). Locked once registered. */
+  durationWarning: DurationWarning | null;
+  /** The speed-adjustment factor the requested duration implies (PRD §7.2); null for a scene created without a decomposition. Locked once registered (record-speed-adjustment-factor, JOS-148). */
+  speedFactor: number | null;
+  /** Set only when the factor exceeds the hardcoded `SPEED_FACTOR_LIMIT`. Locked once registered. */
+  speedFactorWarning: SpeedFactorWarning | null;
+  provider: string;
+  /** Configured at scene creation so automatic retries can reuse the same behaviour. */
+  providerMode: ProviderOutcomeMode;
+  providerLatencyMs: number;
+  /** The video stage's provider binding; null until the first video attempt (generate-chunk-video, JOS-146, Decision 5). */
+  videoProvider: string | null;
+  /** The clip's relative path in the project folder; null until the video stage succeeds (JOS-146, Decision 5). */
+  videoResult: string | null;
+  /** When the current clip request was sent, and its allow-listed body; both null before the submit returns and after the attempt ends (show-video-request-status, JOS-200). */
+  videoRequestSentAt: string | null;
+  videoRequestBody: VideoRequestBody | null;
+  /** rebuild-scene (JOS-235) — how many times the User rebuilt this scene; 0 for the first generation. Versions the scene's file names and URLs. */
+  rebuildCount: number;
+}
+
+/**
+ * Outcome the stubbed provider can be configured to produce for a given
+ * request. "flaky" fails transiently on the first attempt(s) and then
+ * succeeds, to exercise the retry budget without exhausting it.
+ */
+export const PROVIDER_OUTCOME_MODES = [
+  "success",
+  "transient_failure",
+  "not_retryable_failure",
+  "unrecoverable", // the provider loses the request entirely (simulates it not holding a result after our restart)
+  "flaky",
+] as const;
+
+export type ProviderOutcomeMode = (typeof PROVIDER_OUTCOME_MODES)[number];
+
+export const STUB_PROVIDER_NAME = "stub-image-provider";
+
+export type ProviderOutcome =
+  | { kind: "success"; result: string }
+  | { kind: "failed_transient"; reason: string }
+  | { kind: "failed_not_retryable"; reason: string };
+
+export interface ProviderRequestRow {
+  id: string;
+  sceneId: string;
+  sentAt: string;
+  latencyMs: number;
+  mode: ProviderOutcomeMode;
+  attemptNumber: number;
+  resolved: 0 | 1;
+  /** Which stage this request belongs to; defaults to 'image' for existing rows (generate-chunk-video, JOS-146, Decision 5). */
+  stage: "image" | "video";
+  /** The provider the scene's stage was bound to when the attempt was recorded (JOS-222); null when the scene had no binding. */
+  providerId: string | null;
+}
+
+import type { StageDiagnostic } from "./stageDiagnostics.ts";
+
+// ---- Wire contract (define-live-updates, JOS-183, Decisions 2/4/8) ----
+
+/** view-progress-by-phase (JOS-168) — the four processing phases, in pipeline order (PRD §8.1, §8.3). */
+export type Phase = "voice-over" | "decomposition" | "scenes" | "assembly";
+export type PhaseStatus = "pending" | "in-progress" | "complete" | "failed";
+
+/** One entry of the session's `phases`: derived on every read from the session state, never stored. */
+export interface PhaseProgress {
+  phase: Phase;
+  status: PhaseStatus;
+  /** Work units a pause is holding for this phase; 0 when not paused. */
+  heldCount: number;
+  /** Only on a failed voice-over, decomposition or assembly entry; never the failure time or provider detail. */
+  failure?: { cause: string; retryable: boolean };
+  /** see-provider-and-attempts (JOS-166) — the session-level stages of this phase that have run, in pipeline order. */
+  stages: StageDiagnostic[];
+}
+
+/** Session event / snapshot field — carries CURRENT state, never a delta. */
+export interface SessionEventPayload {
+  type: "session";
+  sessionId: string;
+  title: string;
+  /** Exposed here because start-video-project (JOS-134) needs the write-once
+   * guarantee (AC03) externally verifiable through this same read/resync
+   * endpoint (consult-session, JOS-135, Decision 1: one representation for
+   * both). consult-session owns formalising the rest of the read contract. */
+  script: string;
+  language: string;
+  state: SessionState;
+  paused: boolean; // Decision 8 — always its own field, never folded into `state`
+  held: Array<{ stage: string; count: number }>; // only non-empty while paused; derived from registry
+  /** distinguish-paused-session (JOS-153), design Decisions 2-3 — stages with work actually in flight, derived from
+   * scene status and in-flight stage attempts. Computed whether or not the session is paused, unlike `held`. */
+  running: Array<{ stage: string; count: number }>;
+  failedPhase?: string;
+  /** gate-assembly-on-complete-scenes (JOS-150): the failed scenes' indexes, ascending; present only when `failedPhase` is `"scenes"`. Derived, never stored. */
+  failedSceneIndexes?: number[];
+  /** generate-voice-over (JOS-136) Decision 11 — present once the narration exists; never its file paths or the provider's request id, and no download (PRD §12.3). */
+  voiceOver?: { provider: string; durationSeconds: number; nativeTimestampsAvailable: boolean; completedAt: string };
+  /** Present while the session is `failed` in a phase that records its failure (Decision 9): the phase, a cause written for a person, and whether a retry may help, whether the User can start a new cycle, and which cycle and how many attempts it held (bounded-retry-policy, JOS-184). */
+  failure?: { phase: string; cause: string; retryable: boolean; manualRetryAvailable: boolean; cycle: number; attemptsInCycle: number; occurredAt: string };
+  /** view-progress-by-phase (JOS-168): the four phases in pipeline order, each with its status. Derived, never stored. */
+  phases: PhaseProgress[];
+  /** PRD §12.2 — the project-folder name derives from this instant, and
+   * consult-session (JOS-135) task 3.1 requires it in the session read. */
+  createdAt: string;
+  updatedAt: string;
+  /** Route to download the assembled MP4; present only when state is `final-video` (JOS-149). */
+  finalVideoUrl?: string;
+  /** adjust-scene-pause (JOS-190), Decision 9 — present once a final video exists. Derived on every read. */
+  finalVideo?: FinalVideoStatus;
+}
+
+/** The current final video's place in its history, and what a rebuild would change. */
+export interface FinalVideoStatus {
+  /** 1 for the original `final-video.mp4`; 2 onwards for each rebuild. */
+  version: number;
+  /** True when the User's pause edits differ from those the current version was built with. */
+  pendingPauseEdits: boolean;
+  /** rebuild-scene (JOS-235) — true when a scene was rebuilt after this version was built, so a rebuild would change it. */
+  staleScenes: boolean;
+  /** Present only while the latest rebuild attempt ended in failure; the current version is kept. */
+  rebuildFailure?: { cause: string };
+}
+
+/** What the dial may do for one scene (adjust-scene-pause, JOS-190). All values in seconds. */
+export interface ScenePauseView {
+  originalSeconds: number;
+  seconds: number;
+  minSeconds: number;
+  maxSeconds: number;
+  /** Whether the speed-factor limit, not the 0.2 s floor or 3.0 s cap, set a bound. */
+  limitedBySpeedFactor: boolean;
+}
+
+export interface VideoRequestView {
+  provider: { name: string; model: string | null };
+  attempt: number;
+  sentAt: string;
+  /** Calculated from earlier clips of the same provider; null when there is none to base it on. */
+  estimate: { seconds: number; basedOn: number } | null;
+  body: VideoRequestBody;
+  /** JOS-233 — the provider's task id of the current attempt. */
+  taskId: string;
+  /** JOS-233 — the last "still running" answer this application received for the task; null until the first one since it started. */
+  lastCheckedAt: string | null;
+  /** JOS-233 — when the clip wait ceiling fails the scene if the task is unfinished; null when the video stage has no time limit. */
+  waitEndsAt: string | null;
+}
+
+/** Scene event / snapshot entry — carries CURRENT state, never a delta. */
+export interface SceneEventPayload {
+  type: "scene";
+  sessionId: string;
+  sceneId: string;
+  index: number;
+  state: SceneState;
+  affectedStage?: "image" | "video";
+  errorCause?: string | null;
+  /** see-provider-and-attempts (JOS-166) — which provider each stage used and how many attempts it made; a key is present once that stage has at least one attempt. */
+  stages: { image?: StageDiagnostic; video?: StageDiagnostic };
+  result?: { imageUrl?: string; videoUrl?: string };
+  /** download-scene-results (JOS-163), design Decision 3 — present only for the files that actually exist; the page renders a link for exactly these, never deriving availability from `state`. */
+  downloads?: { imageUrl?: string; clipUrl?: string };
+  instruction?: string;
+  /** PRD §3 `PROMPT` (assign-scene-identifiers, JOS-144). */
+  prompt?: string;
+  /** PRD §3 `IMAGE`. */
+  imageInstruction?: string;
+  /** PRD §3 `VIDEO`. */
+  videoInstruction?: string;
+  /** PRD §3 narration interval; absent for a scene created without a decomposition. Immutable (assign-narration-intervals, JOS-143). */
+  narrationInterval?: NarrationInterval;
+  /** The admitted clip duration requested for this chunk (PRD §7.2); absent for a scene created without a decomposition. Immutable (request-admitted-clip-duration, JOS-147). */
+  requestedDurationSeconds?: number;
+  /** Set only when the interval was narrated longer than the largest admitted duration (§6.1.1). Immutable. */
+  durationWarning?: DurationWarning;
+  /** The speed-adjustment factor the requested duration implies (PRD §7.2); absent for a scene created without a decomposition. Immutable (record-speed-adjustment-factor, JOS-148). */
+  speedFactor?: number;
+  /** Set only when the factor exceeds the hardcoded `SPEED_FACTOR_LIMIT`. Immutable. */
+  speedFactorWarning?: SpeedFactorWarning;
+  /** show-video-request-status (JOS-200) — present only while the scene's clip request is in flight and has been sent. */
+  videoRequest?: VideoRequestView;
+  held?: boolean; // true only while the session is paused and this scene has pending work
+  /** adjust-scene-pause (JOS-190): present only once the session has a final video and this scene's pause can be derived. */
+  pause?: ScenePauseView;
+  updatedAt: string;
+}
+
+export interface SessionSnapshot {
+  session: SessionEventPayload;
+  scenes: SceneEventPayload[];
+}
