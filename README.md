@@ -66,7 +66,26 @@ The backend owns the orchestrator: a state machine per session and per scene, a 
 | `docs/` | PRD, ADRs, data model, API contract, standards, development guide |
 | `openspec/specs/` | Behaviour specifications, the source of truth for each capability |
 
-## Running it
+## Installing a release
+
+Download the zip for your platform from the [releases page](https://github.com/TonyMElguezabal/Vid4You/releases) and unzip it. Each folder holds the `Vid4You` executable with its own `ffmpeg` and `ffprobe`; nothing else needs installing. To check the download, put `SHA256SUMS.txt` next to the zip and run `shasum -a 256 -c SHA256SUMS.txt --ignore-missing` there.
+
+The executables are not signed yet, so macOS Gatekeeper and Windows SmartScreen block them the first time. Clear the download mark once, on the unzipped folder:
+
+```bash
+# macOS
+xattr -dr com.apple.quarantine ~/Downloads/Vid4You-darwin-arm64-unsigned
+~/Downloads/Vid4You-darwin-arm64-unsigned/Vid4You
+```
+
+```powershell
+# Windows (PowerShell), or choose "More info → Run anyway" on the SmartScreen prompt
+Get-ChildItem -Recurse $env:USERPROFILE\Downloads\Vid4You-win32-x64-unsigned | Unblock-File
+```
+
+The app opens in the browser at `http://127.0.0.1:3100`; starting it again opens the running instance. Data is kept in `~/Library/Application Support/Vid4You` on macOS and `%APPDATA%\Vid4You` on Windows, so replacing the folder with a newer release keeps every session. Provider keys and the Administrator password are set as described in [`docs/development_guide.md`](docs/development_guide.md).
+
+## Running from source
 
 Requirements: Node.js 26.4.0, and ffmpeg and ffprobe on the machine for development.
 
