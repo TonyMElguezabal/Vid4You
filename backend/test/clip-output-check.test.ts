@@ -24,12 +24,9 @@ describe("judgeClip (pure)", () => {
     expect(judgeClip({ ...good, framesRead: undefined, width: undefined, height: undefined }, 10)).toMatchObject({ ok: false, reason: "the generated clip has no video that can be decoded" });
   });
 
-  it("names the measured size when the clip is too small", () => {
-    expect(judgeClip({ ...good, width: 1280, height: 720, durationSeconds: 10 }, 10)).toEqual({
-      ok: false,
-      unavailable: false,
-      reason: "the generated clip is 1280x720; a clip must be horizontal and at least 1920x1080",
-    });
+  it("accepts a clip below 1920x1080, such as a 768P 1344x768 clip, for the assembly to scale up", () => {
+    expect(judgeClip({ ...good, width: 1344, height: 768, durationSeconds: 10 }, 10)).toEqual({ ok: true });
+    expect(judgeClip({ ...good, width: 1280, height: 720, durationSeconds: 10 }, 10)).toEqual({ ok: true });
   });
 
   it("refuses a portrait clip even when it is large", () => {
@@ -37,9 +34,8 @@ describe("judgeClip (pure)", () => {
     expect(judgeClip({ ...good, width: 2160, height: 2160, durationSeconds: 10 }, 10)).toMatchObject({ ok: false });
   });
 
-  it("checks the size at its boundaries", () => {
-    expect(judgeClip({ ...good, width: 1919, height: 1080, durationSeconds: 10 }, 10)).toMatchObject({ ok: false });
-    expect(judgeClip({ ...good, width: 1920, height: 1079, durationSeconds: 10 }, 10)).toMatchObject({ ok: false });
+  it("refuses a square clip: it must be wider than tall", () => {
+    expect(judgeClip({ ...good, width: 1080, height: 1080, durationSeconds: 10 }, 10)).toMatchObject({ ok: false, reason: expect.stringContaining("1080x1080") });
   });
 
   it("accepts a duration from 0.5 s under to 1 s over the request, and refuses outside it", () => {
@@ -56,7 +52,7 @@ describe("judgeClip (pure)", () => {
   it("reports the first rule that fails, in order", () => {
     expect(judgeClip({ formatName: "matroska", framesRead: 0, width: 640, height: 480, durationSeconds: 1 }, 10)).toMatchObject({ reason: "the generated clip is not an MP4 file that can be read" });
     expect(judgeClip({ ...good, framesRead: 0, width: 640, height: 480, durationSeconds: 1 }, 10)).toMatchObject({ reason: "the generated clip has no video that can be decoded" });
-    expect(judgeClip({ ...good, width: 640, height: 480, durationSeconds: 1 }, 10)).toMatchObject({ reason: expect.stringContaining("640x480") });
+    expect(judgeClip({ ...good, width: 480, height: 640, durationSeconds: 1 }, 10)).toMatchObject({ reason: expect.stringContaining("480x640") });
   });
 });
 
@@ -65,8 +61,8 @@ describe("checkClip (real ffprobe on real clips)", () => {
     expect(await checkClip(makeClip(1920, 1080, 10), 10)).toEqual({ ok: true });
   });
 
-  it("refuses a 1280x720 clip", async () => {
-    expect(await checkClip(makeClip(1280, 720, 10), 10)).toMatchObject({ ok: false, unavailable: false, reason: expect.stringContaining("1280x720") });
+  it("accepts a 1344x768 clip (768P), which the assembly scales up", async () => {
+    expect(await checkClip(makeClip(1344, 768, 10), 10)).toEqual({ ok: true });
   });
 
   it("refuses a portrait 1080x1920 clip", async () => {

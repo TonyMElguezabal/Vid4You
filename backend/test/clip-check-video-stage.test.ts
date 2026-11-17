@@ -110,17 +110,17 @@ describe("The video stage runs the clip check", () => {
     expect(getLatestProviderRequestForScene(sceneId)).toMatchObject({ mode: "transient_failure" });
   });
 
-  it("a clip that fails on every attempt fails the scene at video with the last reason", async () => {
+  it("a portrait clip that fails on every attempt fails the scene at video with the last reason", async () => {
     const runId = randomUUID();
     createRun(runId, "always short", "script", "en");
-    const provider = useClip(makeClip(1280, 720, REQUESTED_SECONDS));
+    const provider = useClip(makeClip(720, 1280, REQUESTED_SECONDS));
 
     const sceneId = await bringToImageComplete(runId);
     await waitFor(() => getScene(sceneId)?.status === "failed");
 
     expect(provider.calls).toHaveLength(4); // 1 attempt + 3 automatic retries
     const scene = getScene(sceneId)!;
-    expect(scene.lastError).toContain("the generated clip is 1280x720; a clip must be horizontal and at least 1920x1080");
+    expect(scene.lastError).toContain("the generated clip is 720x1280; a clip must be horizontal");
     expect(scene.videoResult).toBeNull();
     expect(scene.result).not.toBeNull(); // the image is unchanged
     expect(toSnapshot(runId)?.scenes[0]?.affectedStage).toBe("video");

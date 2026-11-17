@@ -9,10 +9,8 @@ import { describeToolProblem } from "./mediaToolsCheck.ts";
 const execFileAsync = promisify(execFile);
 
 // check-generated-clip (JOS-265), design Decisions 1-2 — a generated clip is measured from its own bytes before it is
-// stored, as an image is (imageOutputCheck.ts). The size and duration rules are the product owner's (2026-11-05).
+// stored, as an image is (imageOutputCheck.ts). The orientation and duration rules are the product owner's (2026-11-05). A clip below the final video's size (a 768P clip is 1344x768) is not refused: the assembly scales it up.
 
-const MIN_WIDTH = 1920;
-const MIN_HEIGHT = 1080;
 const DURATION_MARGIN_UNDER_SECONDS = 0.5;
 const DURATION_MARGIN_OVER_SECONDS = 1;
 
@@ -33,8 +31,8 @@ export function judgeClip(measure: ClipMeasure, requestedSeconds: number): ClipC
   if (!measure.formatName?.split(",").includes("mp4")) return refuse("the generated clip is not an MP4 file that can be read");
   const { width, height, durationSeconds } = measure;
   if (!measure.framesRead || width === undefined || height === undefined) return refuse("the generated clip has no video that can be decoded");
-  if (width < MIN_WIDTH || height < MIN_HEIGHT || width <= height) {
-    return refuse(`the generated clip is ${width}x${height}; a clip must be horizontal and at least ${MIN_WIDTH}x${MIN_HEIGHT}`);
+  if (width <= height) {
+    return refuse(`the generated clip is ${width}x${height}; a clip must be horizontal`);
   }
   if (
     durationSeconds === undefined ||
