@@ -30,6 +30,7 @@ import { VOICE_PROVIDER } from "./config/providers.ts";
 import { resolveProfileId } from "./keyStore.ts";
 import { ensureProfiles, getProfile } from "./providerProfiles.ts";
 import { launchDecompositionFor } from "./decompositionPhase.ts";
+import { ffmpegLevelTools, levelIfNeeded, type LevelTools } from "./voiceLevel.ts";
 import { admitLaunch, registerStageLauncher, type StageLauncher } from "./launchGate.ts";
 import { broadcast } from "./orchestrator.ts";
 import { recordAttemptOutcome, type RecordedOutcome } from "./retry/stageAttemptRecorder.ts";
@@ -100,6 +101,13 @@ export function setVoiceOverLogger(next: VoiceOverLogger): void {
   logger = next;
 }
 
+// level-voice-over-volume — the tools that measure and level the audio; tests replace them.
+let levelTools: LevelTools = ffmpegLevelTools;
+
+export function setLevelTools(next: LevelTools): void {
+  levelTools = next;
+}
+
 export type VoiceOverOutcome =
   | { ok: true }
   | { ok: false; reason: "unknown-session" | "narration-complete" | "already-in-flight" | "failed" | "retry-scheduled" };
@@ -156,16 +164,29 @@ export async function confirmVoiceOver(
   const probe = await probeAudio(result.audio);
   if (!probe.ok) return { stored: false, reason: probe.unavailable ? "probe-unavailable" : "invalid-audio", detail: probe.detail };
 
+  // level-voice-over-volume — a voice-over whose volume drifts is levelled once; any other audio, and any problem in
+  // this step, leaves the provider's audio exactly as returned. The step never fails the session.
+  const leveling = await levelIfNeeded(result.audio, probe.durationSeconds, levelTools);
+  if (leveling.reason) {
+    logger.warn(
+      { event: "voice-level-skipped", sessionId: runId, stage: "voice-over", reason: leveling.reason },
+      `the voice-over's volume drifts but the provider's audio was kept (${leveling.reason})`,
+    );
+  } else if (leveling.levelled) {
+    logger.info({ event: "voice-levelled", sessionId: runId, stage: "voice-over" }, "the voice-over's volume was levelled");
+  }
+  const audio = leveling.audio;
+
   const hasTimestamps = result.nativeTimestamps !== undefined;
   try {
-    writeArtefactOnce(run.projectFolder, AUDIO_FILE, Buffer.from(result.audio));
+    writeArtefactOnce(run.projectFolder, AUDIO_FILE, Buffer.from(audio));
     if (hasTimestamps) writeArtefactOnce(run.projectFolder, NATIVE_TIMESTAMPS_FILE, JSON.stringify(result.nativeTimestamps));
     const voiceOver: VoiceOver = {
       runId,
       audioPath: AUDIO_FILE,
       timestampsPath: hasTimestamps ? NATIVE_TIMESTAMPS_FILE : null,
-      durationSeconds: probe.durationSeconds,
-      sizeBytes: result.audio.byteLength,
+      durationSeconds: leveling.durationSeconds,
+      sizeBytes: audio.byteLength,
       nativeTimestampsAvailable: hasTimestamps,
       providerRequestId: result.providerRequestId ?? null,
       completedAt: now().toISOString(),
