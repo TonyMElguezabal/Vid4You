@@ -61,16 +61,28 @@ describe("The ElevenLabs request", () => {
       text: REQUEST.text,
       model_id: "eleven_multilingual_v2",
       language_code: "en",
+      apply_text_normalization: "on",
     });
   });
 
-  it("sends the script exactly as given, untrimmed and unnormalised", async () => {
+  it("sends the script exactly as given, untrimmed and unchanged", async () => {
     const { fetchFn, calls } = fakeFetch(successResponse());
     const script = "  Line one.\n\nLine two,  with   spaces.  ";
 
     await providerWith(fetchFn).synthesize({ ...REQUEST, text: script });
 
     expect(JSON.parse(calls[0]?.init.body as string).text).toBe(script);
+  });
+
+  it("keeps figures in the text as stored and asks the provider to always normalise them", async () => {
+    const { fetchFn, calls } = fakeFetch(successResponse());
+    const script = "Plan G is $2,640 a year, 20% of $208, due December 7th.";
+
+    await providerWith(fetchFn).synthesize({ ...REQUEST, text: script });
+
+    const body = JSON.parse(calls[0]?.init.body as string);
+    expect(body.text).toBe(script);
+    expect(body.apply_text_normalization).toBe("on");
   });
 
   it("sets no time limit unless one is given, because the story sends scripts of any length", async () => {

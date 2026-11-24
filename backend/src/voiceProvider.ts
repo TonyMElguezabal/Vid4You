@@ -69,8 +69,14 @@ export function createElevenLabsVoiceProvider(
       }
 
       const url = `${ELEVENLABS_BASE_URL}/${encodeURIComponent(request.voiceId)}/with-timestamps?output_format=${encodeURIComponent(request.outputFormat)}`;
-      // The script goes as stored: not trimmed, not normalised (PRD §4.2).
-      const body: Record<string, unknown> = { text: request.text, model_id: request.model, language_code: request.language };
+      // The script goes as stored: not trimmed or rewritten by us (PRD §4.2). The provider is told to always
+      // normalise it, because its "auto" default misread amounts such as $2,640 and $13,500 aloud.
+      const body: Record<string, unknown> = {
+        text: request.text,
+        model_id: request.model,
+        language_code: request.language,
+        apply_text_normalization: "on",
+      };
       if (request.speed !== "default") body.voice_settings = { speed: request.speed };
 
       let response: Response;

@@ -45,7 +45,7 @@ export function createElevenLabsAlignmentProvider(
         return { kind: "failed_not_retryable", reason: err instanceof Error ? err.message : "missing API key for the alignment role" };
       }
 
-      // The script goes as stored: not trimmed, not normalised (PRD §4.2).
+      // The script goes as stored: not trimmed or rewritten (PRD §4.2).
       const form = new FormData();
       // A copy backed by a plain ArrayBuffer, which is what Blob accepts.
       form.append("file", new Blob([new Uint8Array(audio)], { type: "audio/mpeg" }), "voice-over.mp3");
