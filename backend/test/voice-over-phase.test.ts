@@ -18,6 +18,7 @@ import { buildApp } from "../src/server.ts";
 import {
   confirmVoiceOver,
   generateVoiceOver,
+  setLevelTools,
   setVoiceOverLogger,
   voiceOverLauncher,
   type VoiceOverLogEntry,
@@ -31,6 +32,7 @@ import {
   type VoiceProvider,
 } from "../src/voiceProvider.ts";
 import { VOICE_PROVIDER } from "../src/config/providers.ts";
+import { ffmpegLevelTools, type LevelTools } from "../src/voiceLevel.ts";
 import { releaseAttempt } from "../src/retry/retryScheduler.ts";
 import { setRetryDelayConfig } from "../src/retry/stageAttemptRecorder.ts";
 import { continueSession, pauseSession } from "../src/orchestrator.ts";
@@ -693,5 +695,99 @@ describe("Logs (5.18, 5.19)", () => {
     expect(logs.length).toBeGreaterThan(0);
     expect(serialized).not.toContain("purple elephants");
     expect(serialized).not.toContain(secret);
+  });
+});
+
+// level-voice-over-volume — a voice-over whose volume drifts is levelled before it is stored; a problem in the step
+// never fails the session. The tools are replaced, so no real fade is needed: the decision itself is tested elsewhere.
+describe("A voice-over whose volume drifts is levelled before it is stored", () => {
+  const level = (db: number, seconds: number): number[] => Array.from({ length: seconds }, () => db);
+  const FADED = [...level(-20, 50), ...level(-30, 10), ...level(-20, 50)];
+  const IMPROVED = FADED.map((value, second) => value + (second < 50 ? 0 : second < 60 ? (second - 49) * 0.8 : second < 70 ? (70 - second) * 0.8 : 0));
+  const ORIGINAL = createSilentMp3(3);
+  const LEVELLED = createSilentMp3(2);
+
+  function toolsFor(overrides: Partial<LevelTools> = {}): LevelTools {
+    let measured = 0;
+    return {
+      measure: () => Promise.resolve(measured++ === 0 ? FADED : IMPROVED),
+      level: () => Promise.resolve(LEVELLED),
+      durationSeconds: () => ffmpegLevelTools.durationSeconds(ORIGINAL),
+      peakDb: () => Promise.resolve(-3),
+      ...overrides,
+    };
+  }
+
+  afterEach(() => setLevelTools(ffmpegLevelTools));
+
+  it("stores the levelled MP3, its measured duration and the provider's timestamps unmodified", async () => {
+    setLevelTools(toolsFor());
+    const runId = register();
+    useStub("hang");
+    const timestamps = { characters: ["T"], character_start_times_seconds: [0], character_end_times_seconds: [0.1] };
+
+    const outcome = await confirmVoiceOver(runId, { kind: "success", audio: ORIGINAL, nativeTimestamps: timestamps });
+
+    expect(outcome.stored).toBe(true);
+    const folder = getRun(runId)?.projectFolder ?? "";
+    expect(readFileSync(resolveArtefactPath(folder, "voice-over.mp3")).equals(LEVELLED)).toBe(true);
+    expect(JSON.parse(readFileSync(resolveArtefactPath(folder, "voice-over-timestamps.json"), "utf8"))).toEqual(timestamps);
+    expect(getVoiceOver(runId)).toMatchObject({ sizeBytes: LEVELLED.byteLength, nativeTimestampsAvailable: true });
+    expect(getVoiceOver(runId)?.durationSeconds).toBeCloseTo(await ffmpegLevelTools.durationSeconds(ORIGINAL), 5);
+  });
+
+  it("stores the provider's MP3 byte for byte when there is no dip, and logs no warning", async () => {
+    setLevelTools(toolsFor({ measure: () => Promise.resolve(level(-20, 110)) }));
+    const runId = register();
+    useStub("hang");
+
+    await confirmVoiceOver(runId, { kind: "success", audio: ORIGINAL });
+
+    const folder = getRun(runId)?.projectFolder ?? "";
+    expect(readFileSync(resolveArtefactPath(folder, "voice-over.mp3")).equals(ORIGINAL)).toBe(true);
+    expect(logs.filter((entry) => entry.event === "voice-level-skipped")).toEqual([]);
+  });
+
+  it("reaches voice-over-complete with the provider's MP3 and a warning when the levelling tool fails", async () => {
+    setLevelTools(toolsFor({ measure: () => Promise.reject(new Error("ffmpeg could not start")) }));
+    const runId = register();
+    useStub("success");
+
+    await generateVoiceOver(runId);
+
+    expect(stateOf(runId)).toBe("voice-over-complete");
+    const folder = getRun(runId)?.projectFolder ?? "";
+    expect(readFileSync(resolveArtefactPath(folder, "voice-over.mp3")).length).toBeGreaterThan(0);
+    expect(logs).toContainEqual(expect.objectContaining({ event: "voice-level-skipped", sessionId: runId, reason: "tool-failed" }));
+  });
+
+  it("does not measure or level again when the voice-over is already stored, as after a retry or a restart", async () => {
+    let measurements = 0;
+    const counting = toolsFor();
+    setLevelTools({ ...counting, measure: (audio) => { measurements++; return counting.measure(audio); } });
+    const runId = register();
+    useStub("hang");
+    await confirmVoiceOver(runId, { kind: "success", audio: ORIGINAL });
+    const measuredOnce = measurements;
+    const folder = getRun(runId)?.projectFolder ?? "";
+    const stored = readFileSync(resolveArtefactPath(folder, "voice-over.mp3"));
+
+    const again = await confirmVoiceOver(runId, { kind: "success", audio: ORIGINAL });
+
+    expect(again).toEqual({ stored: false, reason: "already-stored" });
+    expect(measurements).toBe(measuredOnce);
+    expect(readFileSync(resolveArtefactPath(folder, "voice-over.mp3")).equals(stored)).toBe(true);
+  });
+
+  it("logs a warning and stores the provider's MP3 when the levelled one is rejected", async () => {
+    setLevelTools(toolsFor({ peakDb: () => Promise.resolve(-0.2) }));
+    const runId = register();
+    useStub("hang");
+
+    await confirmVoiceOver(runId, { kind: "success", audio: ORIGINAL });
+
+    const folder = getRun(runId)?.projectFolder ?? "";
+    expect(readFileSync(resolveArtefactPath(folder, "voice-over.mp3")).equals(ORIGINAL)).toBe(true);
+    expect(logs).toContainEqual(expect.objectContaining({ event: "voice-level-skipped", reason: "clipped" }));
   });
 });
