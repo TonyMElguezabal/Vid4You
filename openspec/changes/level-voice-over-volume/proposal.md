@@ -5,8 +5,8 @@ ElevenLabs generates the whole script in one request, and in a real session (11â
 ## What Changes
 
 - After the provider returns the MP3 and before it is stored, the system measures the loudness of the speech in 10-second windows.
-- If any window is more than 6 dB quieter than the median window, the system levels the audio once (volume levelling filter, re-encoded as MP3 at the same bit rate) and re-measures it.
-- The levelled file replaces the provider's file only if it is better (its worst dip is smaller), has the same duration within one frame, and does not clip. Otherwise the provider's file is stored untouched.
+- If any window is more than 6 dB quieter than the median window, the system levels the audio once (volume levelling filter with slow gain changes, re-encoded as MP3 at the same bit rate) and re-measures it.
+- The levelled file replaces the provider's file only if it is better (its worst dip is smaller), has the same duration within one frame, does not clip, and is smooth (the applied gain never jumps by more than 2 dB between consecutive seconds, so a fade is recovered gradually instead of with a sudden boost). Otherwise the provider's file is stored untouched.
 - A file with no such dip is stored byte-identical to what the provider returned.
 - A problem in this step never fails the session: the original audio is stored and a warning is logged.
 - No change to timestamps, intervals, subtitles or assembly: the stored MP3 is still the one the assembly copies unchanged.

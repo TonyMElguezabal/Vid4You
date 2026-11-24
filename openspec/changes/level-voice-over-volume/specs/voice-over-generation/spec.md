@@ -4,7 +4,7 @@
 
 Before storing the provider's audio, the system SHALL measure the loudness of the speech in consecutive 10-second windows, ignoring silence and windows with fewer than 4 seconds of speech. A window SHALL count as a dip when its level is more than 6 dB below the median level of all measured windows. When the audio has fewer than 3 measured windows, or no dip, the system SHALL store the provider's audio unchanged, byte for byte.
 
-When there is at least one dip, the system SHALL level the audio once and measure the result. The system SHALL store the levelled audio instead of the provider's only when its deepest dip is smaller than the original's, its duration differs from the original's by at most one frame at the final video's frame rate, and its loudest peak does not exceed −1 dBFS. Otherwise the system SHALL store the provider's audio unchanged. The system SHALL NOT fail the session, change its state, or retry the provider because of this step, and SHALL log a warning when it stores the provider's audio although a dip was found. The system SHALL NOT change the stored native timestamps.
+When there is at least one dip, the system SHALL level the audio once and measure the result. The system SHALL store the levelled audio instead of the provider's only when its deepest dip is smaller than the original's, its duration differs from the original's by at most one frame at the final video's frame rate, its loudest peak does not exceed −1 dBFS, and the volume change it applied is smooth: between two consecutive seconds of speech the applied gain SHALL NOT change by more than 2 dB. Otherwise the system SHALL store the provider's audio unchanged. The system SHALL NOT fail the session, change its state, or retry the provider because of this step, and SHALL log a warning when it stores the provider's audio although a dip was found. The system SHALL NOT change the stored native timestamps.
 
 #### Scenario: The audio has no dip
 
@@ -51,6 +51,17 @@ When there is at least one dip, the system SHALL level the audio once and measur
 - **WHEN** the levelled audio's peak exceeds −1 dBFS or its duration differs by more than one frame
 - **THEN** the provider's audio is stored unchanged
 - **AND** a warning is logged
+
+#### Scenario: Levelling is not smooth
+
+- **WHEN** the levelled audio applies a gain that changes by more than 2 dB between two consecutive seconds of speech, such as a sudden boost when the voice fades
+- **THEN** the provider's audio is stored unchanged
+- **AND** a warning is logged
+
+#### Scenario: A fade is recovered gradually
+
+- **WHEN** audio with a 10 dB fade over 20 seconds is levelled
+- **THEN** the volume comes back up without a sudden boost: the applied gain changes by no more than 2 dB between consecutive seconds of speech
 
 #### Scenario: The levelling tool fails
 

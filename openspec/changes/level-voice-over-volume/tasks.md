@@ -10,9 +10,9 @@
 
 ## 2. Measuring and levelling
 
-- [ ] 2.1 Write failing tests with generated audio (ffmpeg sine bursts with a controlled fade), skipped when the media tools are unavailable like the other media tests: a faded file is detected; a flat file is detected as clean and stored byte-identical; the levelled file keeps its length within one frame, stays under −1 dBFS and has a smaller deepest dip
-- [ ] 2.2 Implement the measurement (one RMS value per second through `astats`) and `levelVoiceOver(audio)` (`dynaudnorm=f=300:g=51:m=20:p=0.9`, libmp3lame 128 kb/s) in `backend/src/voiceLevel.ts`, in a temp folder that is always removed, and make the tests pass
-- [ ] 2.3 Write and pass the acceptance gate tests: not improved, clipped, length changed by more than one frame, the tool failing or missing; each keeps the provider's audio and logs a warning
+- [ ] 2.1 Write failing tests with generated audio (ffmpeg sine bursts with a controlled fade), skipped when the media tools are unavailable like the other media tests: a faded file is detected; a flat file is detected as clean and stored byte-identical; the levelled file keeps its length within one frame, stays under −1 dBFS, has a smaller deepest dip, and its applied gain changes by no more than 2 dB between consecutive seconds of speech (a 10 dB fade over 20 s is the case)
+- [ ] 2.2 Implement the measurement (one RMS value per second through `astats`) and `levelVoiceOver(audio)` (`dynaudnorm=f=1500:g=15:m=20:p=0.9:b=1`, libmp3lame 128 kb/s) in `backend/src/voiceLevel.ts`, in a temp folder that is always removed, and make the tests pass
+- [ ] 2.3 Write and pass the acceptance gate tests: not improved, clipped, length changed by more than one frame, a gain that jumps by more than 2 dB between consecutive seconds, the tool failing or missing; each keeps the provider's audio and logs a warning
 
 ## 3. Wiring
 
