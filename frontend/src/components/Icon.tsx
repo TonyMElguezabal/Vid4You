@@ -1,7 +1,7 @@
 import type { ReactElement } from "react";
 
 /** The closed set of glyphs the interface uses (redesign-visual-design, JOS-198, design Decision 6). */
-export type IconName = "check" | "progress" | "failed" | "queued" | "pause" | "play" | "download" | "retry" | "chevron" | "plus";
+export type IconName = "check" | "progress" | "failed" | "queued" | "pause" | "play" | "stop" | "download" | "retry" | "chevron" | "plus";
 
 const GLYPH: Record<IconName, ReactElement> = {
   check: (
@@ -31,6 +31,7 @@ const GLYPH: Record<IconName, ReactElement> = {
     </>
   ),
   play: <path d="M5 3.2v9.6l7.6-4.8z" fill="currentColor" />,
+  stop: <rect x="3.5" y="3.5" width="9" height="9" rx="1.5" fill="currentColor" />,
   download: <path d="M8 2.5v8M4.5 7.5L8 11l3.5-3.5M3 13.5h10" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />,
   retry: <path d="M13 8a5 5 0 1 1-1.5-3.6M13 2.5v3h-3" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />,
   chevron: <path d="M6 3.5L10.5 8 6 12.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />,

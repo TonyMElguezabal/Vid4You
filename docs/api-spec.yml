@@ -18,6 +18,11 @@
 # file (same
 # command) whenever a route changes, rather than hand-editing it out of sync.
 #
+# watch-scene-clips (JOS-281) - 2026-11-26: new path `GET /sessions/{sessionId}/scenes/{sceneId}/clip`, generated
+# from the running app (`app.swagger()`): the stored clip inline, 200 or 206 (`video/mp4`, binary, via a route-level
+# `swaggerTransform` like the final-video download), 404, 416 for a range past the end (no body; the generator still
+# writes an empty JSON shape for it). `result.videoUrl` is now set on a scene once its clip is stored; its shape is unchanged.
+#
 # configurable-video-connector (JOS-219) - 2026-11-06: no new path. Generated from the running app
 # (`GET /docs/yaml`) for the provider-profile paths: the `configured-video` adapter type, the `json`
 # field kind, `copyKeyFrom` on `POST /admin/provider-profiles`, `keyCleared` on a saved profile, and
@@ -2547,6 +2552,66 @@ paths:
                   - ok
                   - reason
                 additionalProperties: false
+  /sessions/{sessionId}/scenes/{sceneId}/clip:
+    get:
+      description: "watch-scene-clips (JOS-281): the scene's stored clip, inline, for
+        the scene card's player. Every answer carries `Accept-Ranges: bytes`.
+        One `Range: bytes=start-end`, `bytes=start-` or `bytes=-suffix` answers
+        206 with `Content-Range`; a range starting at or past the end answers
+        416 with `Content-Range: bytes */size`; any other `Range` header is
+        ignored and the whole file is sent. The `?r=N` rebuild query of
+        `result.videoUrl` is ignored."
+      parameters:
+        - schema:
+            type: string
+            pattern: ^[0-9A-HJKMNP-TV-Z]{26}$
+          in: path
+          name: sessionId
+          required: true
+        - schema:
+            type: string
+            format: uuid
+          in: path
+          name: sceneId
+          required: true
+      responses:
+        "200":
+          description: "The whole clip, inline, with Accept-Ranges: bytes"
+          content:
+            video/mp4:
+              schema:
+                type: string
+                format: binary
+        "206":
+          description: The requested byte range of the clip, with Content-Range
+          content:
+            video/mp4:
+              schema:
+                type: string
+                format: binary
+        "404":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  reason:
+                    type: string
+                required:
+                  - ok
+                  - reason
+                additionalProperties: false
+        "416":
+          description: "The range starts at or past the end of the clip; Content-Range:
+            bytes */size"
+          content:
+            application/json:
+              schema:
+                description: "The range starts at or past the end of the clip; Content-Range:
+                  bytes */size"
   /sessions/{sessionId}/download/final-video:
     get:
       description: 'Content-Disposition names the file after the project title:

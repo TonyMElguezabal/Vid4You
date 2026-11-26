@@ -8,6 +8,7 @@ import { sceneRecoveryRefusalSentence } from "../sceneRecoveryRefusals";
 import { AFFECTED_STAGE_LABEL, DURATION_WARNING_TEXT, SCENE_STATE_LABEL, SPEED_WARNING_TEXT } from "../statusLabels";
 import { Icon } from "./Icon";
 import { PauseDial } from "./PauseDial";
+import { SceneClipPlayer } from "./SceneClipPlayer";
 import { VideoRequestStatus } from "./VideoRequestStatus";
 import { StatusPill } from "./StatusPill";
 
@@ -111,10 +112,17 @@ export function SceneRow({ scene, paused, onRetry, onCorrect, onSetPause, onRebu
   const imageUrl = scene.result?.imageUrl;
   const hasMedia = Boolean(scene.result?.imageUrl || scene.result?.videoUrl || scene.downloads?.imageUrl || scene.downloads?.clipUrl);
   const statusClass = sceneStatusClass(scene.state, scene.held);
+  const videoUrl = scene.result?.videoUrl;
+  const clipPlayer = videoUrl ? (
+    <SceneClipPlayer key={videoUrl} sceneIndex={scene.index} src={resolveResultUrl(videoUrl)} poster={imageUrl ? resolveResultUrl(imageUrl) : undefined} />
+  ) : null;
 
   return (
     <li aria-label={`Scene ${scene.index}`} className={`scene-row pop ${statusClass}${expanded ? " open" : ""}`}>
-      {!expanded && (
+      {/* watch-scene-clips (JOS-281), Decision 4 — a stored clip takes the thumbnail's place on the card, and the top of the
+       * media column once expanded, so the scene never shows two players. */}
+      {!expanded && clipPlayer}
+      {!expanded && !clipPlayer && (
         <div className={`scene-thumb${!imageUrl && scene.state === "image-generating" ? " shimmer" : ""}`}>
           {imageUrl ? <img src={resolveResultUrl(imageUrl)} alt="" /> : <Icon name={isFailed ? "failed" : "queued"} />}
           <span className="scene-index" aria-hidden="true">
@@ -147,9 +155,7 @@ export function SceneRow({ scene, paused, onRetry, onCorrect, onSetPause, onRebu
               {scene.result?.imageUrl && (
                 <img className="scene-image" src={resolveResultUrl(scene.result.imageUrl)} alt={`Scene ${scene.index} image`} />
               )}
-              {scene.result?.videoUrl && (
-                <video className="scene-clip" controls src={resolveResultUrl(scene.result.videoUrl)} aria-label={`Scene ${scene.index} clip`} />
-              )}
+              {clipPlayer}
               {/* download-scene-results (JOS-163), design Decision 3 — a link renders
                * for exactly the entries the session read offers, never derived from
                * `state`: the image can be downloadable while the clip still isn't. */}

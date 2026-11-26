@@ -217,7 +217,7 @@ describe("The session read points at a scene's viewable results (JOS-151)", () =
     expect(scene.result).toBeUndefined();
   });
 
-  it("carries no videoUrl on any scene", async () => {
+  it("carries no videoUrl on a scene without a stored clip (JOS-281 sets it once one is stored)", async () => {
     const { sessionId } = await startPausedSession();
     sceneWithResult(sessionId, 1, "scene-1-attempt-1.png");
     sceneWithResult(sessionId, 2, null);

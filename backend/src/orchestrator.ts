@@ -185,7 +185,13 @@ function sceneToPayload(scene: Scene, requestCounts: { image: number; video: num
     videoRequest: videoRequestView(scene),
     // show-scene-results-and-actions (JOS-151), Decision 3 — the route path,
     // relative to the API base; the stored file path stays internal.
-    result: scene.result ? { imageUrl: `/sessions/${scene.runId}/scenes/${scene.id}/image${rebuildQuery(scene)}` } : undefined,
+    // watch-scene-clips (JOS-281), Decision 3 — and the clip route's path once a clip is stored, so the card can play it.
+    result: scene.result
+      ? {
+          imageUrl: `/sessions/${scene.runId}/scenes/${scene.id}/image${rebuildQuery(scene)}`,
+          ...(scene.videoResult ? { videoUrl: `/sessions/${scene.runId}/scenes/${scene.id}/clip${rebuildQuery(scene)}` } : {}),
+        }
+      : undefined,
     // download-scene-results (JOS-163), design Decision 3 — availability
     // follows what is actually stored, built here next to `result`, so the
     // page never derives it from `state`.

@@ -157,6 +157,7 @@ describe("the URLs the page shows", () => {
     const scene = await snapshotScene(0);
 
     expect(scene.result?.imageUrl).toMatch(/\/image$/);
+    expect(scene.result?.videoUrl).toMatch(/\/clip$/);
     expect(scene.downloads?.clipUrl).toMatch(/\/download\/video$/);
   });
 
@@ -164,6 +165,7 @@ describe("the URLs the page shows", () => {
     const scene = await snapshotScene(2);
 
     expect(scene.result?.imageUrl).toMatch(/\/image\?r=2$/);
+    expect(scene.result?.videoUrl).toMatch(/\/clip\?r=2$/);
     expect(scene.downloads?.imageUrl).toMatch(/\/download\/image\?r=2$/);
     expect(scene.downloads?.clipUrl).toMatch(/\/download\/video\?r=2$/);
   });
