@@ -6,7 +6,7 @@ import { createRunningHubVideoProvider } from "../src/videoProvider.ts";
 import { createConfiguredVideoProvider } from "../src/videoConnector.ts";
 import { createOpenAiVisualInstructionGenerator } from "../src/visualInstructions.ts";
 import { createElevenLabsVoiceProvider } from "../src/voiceProvider.ts";
-import { runningHubParameters, runwayParameters } from "./videoConnectorFixtures.ts";
+import { runningHubParameters, runwayParameters, viggleParameters } from "./videoConnectorFixtures.ts";
 
 // shared-adapter-contract-suite (JOS-263), design Decisions 1-3 — one table of vendor answers that every operation of
 // every shipped adapter type must classify the same way, against a fake vendor, with exactly one request per failure.
@@ -161,6 +161,25 @@ const FIXTURES: Record<AdapterTypeId, AdapterContractFixture> = {
         malformed: "transient",
         marksUnresponsive: true,
         requestsOnSuccess: 1,
+      },
+      {
+        name: "Viggle multipart submit",
+        call: (fetchFn) => createConfiguredVideoProvider({ fetchFn, loadKey: KEY, parameters: viggleParameters() }).submit({ imageBytes: Buffer.from("image"), instruction: "animate", durationSeconds: 6 }),
+        validAnswer: () => json({ id: "vid_1", status: "queued" }),
+        successKind: "submitted",
+        malformed: "transient",
+        marksUnresponsive: true,
+        requestsOnSuccess: 1,
+      },
+      {
+        name: "Viggle poll",
+        call: (fetchFn) => createConfiguredVideoProvider({ fetchFn, loadKey: KEY, parameters: viggleParameters() }).poll("vid_1"),
+        validAnswer: () => json({ id: "vid_1", status: "ready", video_url: "https://cdn.viggle.ai/v.mp4" }),
+        successKind: "success",
+        malformed: "transient",
+        marksUnresponsive: true,
+        requestsOnSuccess: 1,
+        overrides: { "HTTP 404": "not_found" },
       },
     ],
   },

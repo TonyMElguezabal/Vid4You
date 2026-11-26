@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { validateProviderParameters } from "../src/providerTypes.ts";
 import { createConfiguredVideoProvider } from "../src/videoConnector.ts";
-import { definitionRequests, json, miniMaxParameters, recordingFetch, runningHubParameters, runwayParameters, withStep } from "./videoConnectorFixtures.ts";
+import { definitionRequests, json, miniMaxParameters, recordingFetch, runningHubParameters, runwayParameters, viggleParameters, withStep } from "./videoConnectorFixtures.ts";
 
 // configurable-video-connector (JOS-219), tasks 2.1-2.3 and 2.9 — a video provider described by a definition on /admin:
 // what a definition may say, how its templates are filled, and how the connector runs the submit-and-poll port.
@@ -346,5 +346,61 @@ describe("the MiniMax H3 definition", () => {
 
   it("refuses MiniMax's 2K, naming the 1080p limit", () => {
     expect(problemFields(miniMaxParameters({ resolution: "2K" }))).toEqual(["resolution"]);
+  });
+});
+
+// send-connector-submit-as-multipart — Viggle's create call accepts only a multipart form.
+describe("the Viggle definition", () => {
+  const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2]);
+  const FIELDS = { prompt: "animate the harbor", duration_s: "6", resolution: "768p", aspect_ratio: "16:9", quality: "high", enhance: "false", watermark: "false" };
+
+  it("is accepted at save time", () => {
+    expect(problemFields(viggleParameters())).toEqual([]);
+  });
+
+  it.each([
+    ["PNG", IMAGE, "image/png", "frame.png"],
+    ["JPEG", JPEG, "image/jpeg", "frame.jpg"],
+  ])("sends exactly the body's fields and the %s scene image as one multipart form", async (_name, imageBytes, type, fileName) => {
+    const { connector, requests } = provider(viggleParameters(), () => json({ id: "vid_1", status: "queued" }, 202));
+
+    const result = await connector.submit({ ...SUBMIT, imageBytes });
+
+    expect(requests.map((request) => `${request.init.method} ${request.url}`)).toEqual(["POST https://apis.viggle.ai/v1/videos"]);
+    // No Content-Type: fetch writes it with the form's boundary.
+    expect(headersOf(requests[0]!.init)).toEqual({ Authorization: `Bearer ${KEY}` });
+    const form = requests[0]!.init.body as FormData;
+    expect(form).toBeInstanceOf(FormData);
+    const { first_frame_image: file, ...fields } = Object.fromEntries(form) as Record<string, unknown>;
+    expect(fields).toEqual(FIELDS);
+    expect([...form.keys()]).toHaveLength(Object.keys(FIELDS).length + 1);
+    expect(file).toMatchObject({ name: fileName, type });
+    expect(Buffer.from(await (file as Blob).arrayBuffer())).toEqual(imageBytes);
+    expect(result).toEqual({ kind: "submitted", requestId: "vid_1", sentBody: { prompt: "animate the harbor", duration: 6, resolution: "768p" } });
+  });
+
+  it("reads the clip URL of a ready video and treats 404 as not found", async () => {
+    const ready = provider(viggleParameters(), () => json({ id: "vid_1", status: "ready", video_url: "https://cdn.viggle.ai/v.mp4" }));
+    expect(await ready.connector.poll("vid_1")).toEqual({ kind: "success", clip: { source: "temporary-url", url: "https://cdn.viggle.ai/v.mp4" } });
+    expect(ready.requests[0]!.url).toBe("https://apis.viggle.ai/v1/videos/vid_1");
+    const gone = provider(viggleParameters(), () => json({ error: { code: "RENDER_NOT_FOUND" } }, 404));
+    expect(await gone.connector.poll("vid_x")).toEqual({ kind: "not_found" });
+  });
+
+  const base = () => definitionRequests("viggle");
+  it.each([
+    ["no body", { body: undefined }, "requests.submit.body"],
+    ["an object as a form value", { body: { options: { a: 1 } } }, "requests.submit.body"],
+    ["a list as a form value", { body: { tags: ["a"] } }, "requests.submit.body"],
+    ["a body field with the file's name", { body: { first_frame_image: "{image_data_uri}" } }, "requests.submit.body"],
+    ["an empty file field name", { multipartField: "" }, "requests.submit.multipartField"],
+    ["the GET method", { method: "GET" }, "requests.submit.method"],
+  ])("refuses a multipart submit with %s", (_name, fields, field) => {
+    expect(problemFields(viggleParameters({ requests: withStep(base(), "submit", fields) }))).toEqual([field]);
+  });
+
+  it("refuses a Content-Type header with a multipart submit", () => {
+    const requests = { ...base(), headers: { Authorization: "Bearer {key}", "content-type": "application/json" } };
+    expect(problemFields(viggleParameters({ requests }))).toEqual(["requests.headers"]);
   });
 });

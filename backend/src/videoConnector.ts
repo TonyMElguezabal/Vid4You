@@ -17,7 +17,8 @@ interface ConnectorStep {
 export interface ConnectorRequests {
   headers: Record<string, string>;
   upload?: ConnectorStep & { multipartField: string; urlAt: string };
-  submit: ConnectorStep & { taskIdAt: string };
+  /** With `multipartField`, the body's fields go as form fields and the image as the file of that name. */
+  submit: ConnectorStep & { taskIdAt: string; multipartField?: string };
   poll: ConnectorStep & { statusAt: string; doneWhen: string[]; failedWhen: string[]; videoUrlAt: string; notFoundStatus?: number };
   check?: ConnectorStep & { connectedStatus?: number; charged?: boolean };
 }
@@ -77,7 +78,7 @@ export function createConfiguredVideoProvider(options: { fetchFn?: typeof fetch;
   async function send(stepName: string, step: ConnectorStep, values: Values, key: string, body?: FormData): Promise<Answer> {
     const headers = fill(requests.headers, { ...values, key }) as Record<string, string>;
     const init: RequestInit = { method: body ? "POST" : (step.method ?? "POST"), headers };
-    if (body) init.body = body;
+    if (body) init.body = body; // no Content-Type: fetch writes it with the form's boundary
     else if (step.body !== undefined) {
       init.headers = { ...headers, "Content-Type": "application/json" };
       init.body = JSON.stringify(fill(step.body, values));
@@ -125,9 +126,16 @@ export function createConfiguredVideoProvider(options: { fetchFn?: typeof fetch;
       const [imageType, extension] = sniffImageExtension(imageBytes) === "jpg" ? ["image/jpeg", "jpg"] : ["image/png", "png"];
       const values: Values = { instruction, duration: durationSeconds, model, resolution, image_base64: imageBase64, image_data_uri: `data:${imageType};base64,${imageBase64}` };
 
-      if (requests.upload) {
+      /** A multipart form with the scene image as the file `field`, after one text part per value in `fields`. */
+      const imageForm = (field: string, fields: Record<string, unknown> = {}): FormData => {
         const form = new FormData();
-        form.append(requests.upload.multipartField, new Blob([new Uint8Array(imageBytes)], { type: imageType }), `frame.${extension}`);
+        for (const [name, value] of Object.entries(fields)) form.append(name, String(value));
+        form.append(field, new Blob([new Uint8Array(imageBytes)], { type: imageType }), `frame.${extension}`);
+        return form;
+      };
+
+      if (requests.upload) {
+        const form = imageForm(requests.upload.multipartField);
         const uploaded = await send("upload", requests.upload, values, loaded.key, form);
         if (!uploaded.ok) return uploaded.failure;
         const url = textOf(readPath(uploaded.body, requests.upload.urlAt));
@@ -135,7 +143,9 @@ export function createConfiguredVideoProvider(options: { fetchFn?: typeof fetch;
         values.image_url = url;
       }
 
-      const submitted = await send("submit", requests.submit, values, loaded.key);
+      const { multipartField } = requests.submit;
+      const submitForm = multipartField ? imageForm(multipartField, fill(requests.submit.body, values) as Record<string, unknown>) : undefined;
+      const submitted = await send("submit", requests.submit, values, loaded.key, submitForm);
       if (!submitted.ok) return submitted.failure;
       const taskId = textOf(readPath(submitted.body, requests.submit.taskIdAt));
       if (!taskId) return missing("submit", requests.submit.taskIdAt);

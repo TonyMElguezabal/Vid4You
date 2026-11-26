@@ -139,7 +139,17 @@ function connectorRequestProblems(requests: unknown): Array<{ path: string[]; me
       requireText(step, value, "multipartField");
       requireText(step, value, "urlAt");
     }
-    if (step === "submit") requireText(step, value, "taskIdAt");
+    if (step === "submit") {
+      requireText(step, value, "taskIdAt");
+      if (value.multipartField !== undefined) {
+        requireText(step, value, "multipartField");
+        const { body } = value;
+        const sendable = isRecord(body) && Object.entries(body).every(([name, field]) => name !== value.multipartField && ["string", "number", "boolean"].includes(typeof field));
+        if (!sendable) problem([step, "body"], "of a multipart submit must be an object of text, number or true/false fields, none named like multipartField");
+        if (value.method === "GET") problem([step, "method"], "must be POST for a multipart submit");
+        if (isRecord(headers) && Object.keys(headers).some((name) => name.toLowerCase() === "content-type")) problem(["headers"], "may not set Content-Type: a multipart submit writes its own");
+      }
+    }
     if (step === "poll") {
       requireText(step, value, "statusAt");
       requireText(step, value, "videoUrlAt");
