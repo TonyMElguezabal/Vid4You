@@ -161,6 +161,61 @@ Notes:
 - Clips came back slightly longer than requested (13 s asked, 13.7 s received), and billing followed the requested seconds. The final video cuts each clip to its scene.
 - **MiniMax-H3-Highspeed, -Lite and -Max:** use "Duplicate" and change the model and price. They accept only `480P` or `768P`, and `-Max` starts at 5 s. `-Lite` does not support `adaptive`, so it likely needs a `ratio` such as `16:9` in the body (not tried). Reference video and audio (`reference_video`, `reference_audio`) are a different mode that cannot be mixed with a first frame, and the connector has nothing to send for them.
 
+## Viggle: H3
+
+Request fields verified on 2026-11-26 against the live API with a standalone script (22 videos). Credit check, not-found answer and one 5-second clip through the connector itself verified the same day. Source: Viggle's [generate a video](https://docs.viggle.ai/v1/video/generate-video) page.
+
+Viggle's create call accepts only a multipart form, so the submit step names a `multipartField`: the body's fields are sent as form fields and the scene image as the file with that name. Body values must be text, numbers or true/false.
+
+**This needs a build that has `submit.multipartField`.** An older build ignores the field and sends JSON.
+
+| Field | Value |
+|---|---|
+| Base URL | `https://apis.viggle.ai` |
+| Model | `viggle-h3` (shown in diagnostics; the API has no model field) |
+| Resolution | `768p` |
+| Admitted durations | 5 to 15 (Viggle's own range) |
+| Price | USD 0.01 per second at 768p with `enhance` false; USD 0.02 with it on |
+
+<!-- fixture: viggle -->
+```json
+{
+  "headers": { "Authorization": "Bearer {key}" },
+  "submit": {
+    "method": "POST",
+    "path": "/v1/videos",
+    "multipartField": "first_frame_image",
+    "body": {
+      "prompt": "{instruction}",
+      "duration_s": "{duration}",
+      "resolution": "{resolution}",
+      "aspect_ratio": "16:9",
+      "quality": "high",
+      "enhance": false,
+      "watermark": false
+    },
+    "taskIdAt": "id"
+  },
+  "poll": {
+    "method": "GET",
+    "path": "/v1/videos/{task_id}",
+    "statusAt": "status",
+    "doneWhen": ["ready"],
+    "failedWhen": ["failed", "cancelled"],
+    "videoUrlAt": "video_url",
+    "notFoundStatus": 404
+  },
+  "check": { "method": "GET", "path": "/v1/credits", "connectedStatus": 200, "charged": false }
+}
+```
+
+Notes:
+- Keep `enhance` false. It is on by default, rewrites the instruction and doubles the price.
+- `queued` and `processing` are still running. Viggle refunds failed and cancelled jobs. An empty balance is not refused at submit: the job is accepted and then ends `failed`.
+- Results are deleted 24 hours after a job ends. The application downloads each clip as soon as it is ready.
+- Some 16:9 requests came back as 1280x704 or 1312x736 instead of 1344x768. The final video resizes every clip, so these are stretched slightly.
+- Quality: in ten difficult scenes Viggle passed 3 and failed 6, often losing or inventing on-screen text. MiniMax H3 passed 4. Check each clip.
+
 ## What does not fit
 
 These need a coded adapter:
