@@ -340,13 +340,15 @@ describe("Scene details show the available results (JOS-151, Decision 5)", () =>
     expect(screen.getByRole("img", { name: "Scene 2 image" })).toHaveAttribute("src", `${API_BASE}${path}`);
   });
 
-  it("shows a video player named for the scene when a clip URL is present", async () => {
+  it("shows exactly one video for the scene, the card's player, when a clip URL is present (JOS-281)", async () => {
     const path = "/sessions/s1/scenes/a/clip";
     await expand(makeScene({ sceneId: "a", index: 2, state: "chunk-complete", result: { videoUrl: path } }));
 
-    const player = screen.getByLabelText("Scene 2 clip");
-    expect(player.tagName).toBe("VIDEO");
-    expect(player).toHaveAttribute("src", `${API_BASE}${path}`);
+    const players = screen.getAllByLabelText("Scene 2 clip");
+    expect(players).toHaveLength(1);
+    expect(players[0]!.tagName).toBe("VIDEO");
+    expect(players[0]).toHaveAttribute("src", `${API_BASE}${path}`);
+    expect(players[0]).not.toHaveAttribute("controls");
   });
 
   it("shows neither an image nor a video player when there is no result", async () => {
@@ -544,6 +546,14 @@ describe("Accessible naming convention (Decision 5)", () => {
 
     expect(screen.getByRole("listitem", { name: "Scene 7" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "View scene 7 details" })).toBeInTheDocument();
+  });
+
+  it("names a scene's clip player and its three buttons after the scene (JOS-281)", () => {
+    const scene = makeScene({ sceneId: "n1", index: 7, state: "chunk-complete", result: { videoUrl: "/sessions/s1/scenes/n1/clip" } });
+    render(<SceneRow scene={scene} onRetry={async () => {}} onCorrect={async () => {}} />);
+
+    expect(screen.getByRole("group", { name: "Scene 7 clip player" })).toBeInTheDocument();
+    for (const action of ["Play", "Pause", "Stop"]) expect(screen.getByRole("button", { name: `${action} scene 7 clip` })).toBeInTheDocument();
   });
 });
 

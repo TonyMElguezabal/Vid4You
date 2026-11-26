@@ -46,6 +46,7 @@ import {
 } from "./orchestrator.ts";
 import { SUPPORTED_LANGUAGE_CODES, SUPPORTED_LANGUAGES } from "./config/providers.ts";
 import { ulid } from "./util/ulid.ts";
+import type { Scene } from "./types.ts";
 import { adminDeniedSchema, registerAdminGate } from "./adminAccess.ts";
 import { PROVIDER_STAGES, providerView, selectableProviders, setActiveProvider } from "./activeProvider.ts";
 import { registerFailedStageRoutes } from "./adminFailedStageRoutes.ts";
@@ -373,6 +374,44 @@ const providerViewSchema = z.object({
   selectable: z.array(z.object({ id: z.string(), label: z.string() })),
   orphanedChoice: z.string().nullable(),
 });
+
+/**
+ * watch-scene-clips (JOS-281) — the full path of a scene's stored file, or null when the scene is not this session's,
+ * nothing is stored, the stored path resolves outside the session's project folder, or the file is missing. Shared by
+ * the image and clip routes (the download route still repeats these steps; see the change's design, Risks).
+ */
+function storedSceneFile(sessionId: string, sceneId: string, storedPathOf: (scene: Scene) => string | null): string | null {
+  const scene = getSceneForRun(sessionId, sceneId);
+  const storedPath = scene ? storedPathOf(scene) : null;
+  const run = storedPath ? getRun(sessionId) : undefined;
+  if (!storedPath || !run) return null;
+  let fullPath: string;
+  try {
+    fullPath = resolveArtefactPath(run.projectFolder, storedPath);
+  } catch {
+    return null;
+  }
+  return existsSync(fullPath) && statSync(fullPath).isFile() ? fullPath : null;
+}
+
+/**
+ * watch-scene-clips (JOS-281), design Decision 2 — one byte range of a file of `size` bytes, as inclusive offsets.
+ * Null (send the whole file) for no header or anything but one well-formed range, which RFC 9110 allows a server to
+ * ignore; "unsatisfiable" for a range starting at or past the end.
+ */
+export function parseByteRange(header: string | undefined, size: number): { start: number; end: number } | "unsatisfiable" | null {
+  const match = /^bytes=(\d*)-(\d*)$/.exec(header?.trim() ?? "");
+  if (!match || (match[1] === "" && match[2] === "")) return null;
+  if (match[1] === "") {
+    const suffix = Number(match[2]);
+    if (suffix === 0) return "unsatisfiable";
+    return { start: Math.max(0, size - suffix), end: size - 1 };
+  }
+  const start = Number(match[1]);
+  const end = match[2] === "" ? size - 1 : Math.min(Number(match[2]), size - 1);
+  if (start >= size) return "unsatisfiable";
+  return end < start ? null : { start, end };
+}
 
 export const routes: FastifyPluginAsync = async (app) => {
   const typed = app.withTypeProvider<ZodTypeProvider>();
@@ -779,26 +818,66 @@ export const routes: FastifyPluginAsync = async (app) => {
       },
     },
     async (request, reply) => {
-      const notFound = (reason: string) => {
+      const fullPath = storedSceneFile(request.params.sessionId, request.params.sceneId, (scene) => scene.result);
+      const contentType = fullPath && IMAGE_CONTENT_TYPES[extname(fullPath).toLowerCase()];
+      if (!fullPath || !contentType) {
         reply.code(404);
-        return { ok: false, reason };
-      };
-      const scene = getSceneForRun(request.params.sessionId, request.params.sceneId);
-      if (!scene) return notFound("unknown scene");
-      if (!scene.result) return notFound("scene has no stored image");
-      const contentType = IMAGE_CONTENT_TYPES[extname(scene.result).toLowerCase()];
-      if (!contentType) return notFound("scene has no stored image");
-      const run = getRun(request.params.sessionId);
-      if (!run) return notFound("unknown scene");
-      let fullPath: string;
-      try {
-        fullPath = resolveArtefactPath(run.projectFolder, scene.result);
-      } catch {
-        return notFound("scene has no stored image");
+        return { ok: false, reason: "scene has no stored image" };
       }
-      if (!existsSync(fullPath) || !statSync(fullPath).isFile()) return notFound("scene has no stored image");
       reply.type(contentType);
       return reply.send(createReadStream(fullPath));
+    },
+  );
+
+  // watch-scene-clips (JOS-281), design Decisions 1-2 — plays a scene's stored clip inline, with byte ranges
+  // (Safari plays no video without them; seeking, which Stop uses, needs them). Read-only; the download route
+  // above keeps the attachment. Scoped and confined exactly like the image route.
+  typed.get(
+    "/sessions/:sessionId/scenes/:sceneId/clip",
+    {
+      // Like the final-video download (JOS-164): documented as the binary file it is, not as the z.any() JSON quirk.
+      config: {
+        swaggerTransform: (input: Parameters<typeof jsonSchemaTransform>[0]) => {
+          const out = binaryFileSwaggerTransform("video/mp4", "The whole clip, inline, with Accept-Ranges: bytes")(input);
+          const response = out.schema.response;
+          response["206"] = {
+            description: "The requested byte range of the clip, with Content-Range",
+            content: { "video/mp4": { schema: { type: "string", format: "binary" } } },
+          };
+          response["416"] = { description: "The range starts at or past the end of the clip; Content-Range: bytes */size" };
+          return out;
+        },
+      },
+      schema: {
+        description:
+          "watch-scene-clips (JOS-281): the scene's stored clip, inline, for the scene card's player. Every answer carries `Accept-Ranges: bytes`. " +
+          "One `Range: bytes=start-end`, `bytes=start-` or `bytes=-suffix` answers 206 with `Content-Range`; a range starting at or past the end " +
+          "answers 416 with `Content-Range: bytes */size`; any other `Range` header is ignored and the whole file is sent. " +
+          "The `?r=N` rebuild query of `result.videoUrl` is ignored.",
+        params: z.object({ sessionId: sessionIdSchema, sceneId: z.string().uuid() }),
+        response: { 200: z.any(), 206: z.any(), 404: conflictSchema, 416: z.any() },
+      },
+    },
+    async (request, reply) => {
+      const fullPath = storedSceneFile(request.params.sessionId, request.params.sceneId, (scene) => scene.videoResult);
+      if (!fullPath) {
+        reply.code(404);
+        return { ok: false, reason: "scene has no stored clip" };
+      }
+      const size = statSync(fullPath).size;
+      reply.header("Accept-Ranges", "bytes");
+      const range = parseByteRange(request.headers.range, size);
+      if (range === "unsatisfiable") {
+        reply.code(416).header("Content-Range", `bytes */${size}`);
+        return reply.send();
+      }
+      reply.type("video/mp4");
+      if (!range) {
+        reply.header("Content-Length", size);
+        return reply.send(createReadStream(fullPath));
+      }
+      reply.code(206).header("Content-Range", `bytes ${range.start}-${range.end}/${size}`).header("Content-Length", range.end - range.start + 1);
+      return reply.send(createReadStream(fullPath, range));
     },
   );
 

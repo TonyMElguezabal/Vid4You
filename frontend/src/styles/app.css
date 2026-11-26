@@ -1026,6 +1026,40 @@ progress::-moz-progress-bar {
   aspect-ratio: 16 / 9;
 }
 
+/* watch-scene-clips (JOS-281) — the clip player: in the thumbnail's place on a collapsed card, at the top of the
+ * media column once expanded. */
+.scene-clip-player {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.scene-row > .scene-clip-player .scene-clip {
+  border-radius: 0;
+}
+
+.scene-clip-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.scene-row > .scene-clip-player .scene-clip-controls,
+.scene-row > .scene-clip-player [role="status"] {
+  padding: 0 var(--space-3);
+}
+
+.scene-clip-controls button {
+  padding: 0.3rem 0.65rem;
+  font-size: var(--font-size-sm);
+}
+
+.scene-clip-player [role="status"] {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--color-status-failed);
+}
+
 .correction-form {
   display: flex;
   flex-direction: column;

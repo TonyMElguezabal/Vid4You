@@ -156,6 +156,7 @@ Fixed here as a documented convention, not left to per-story judgement (`docs/ad
 | Scenes done (JOS-198) | `Scenes done` (a native `<progress>`; present only when scenes exist) | — |
 | Scene progress summary (JOS-234) | `Scene progress` (`role="group"` around a `<dl>` in the project panel; present only when scenes exist; read-only, no control, not a live region) | — |
 | Retry a failed scene | `Retry scene {index}` | `Retry scene 7` |
+| A scene's clip player (JOS-281) | `Scene {index} clip player` (`role="group"` on the card, in the thumbnail's place, or at the top of the expanded media column); the `<video>` is `Scene {index} clip` (no native controls, `preload="none"`, the scene image as poster); buttons `Play scene {index} clip`, `Pause scene {index} clip`, `Stop scene {index} clip`; a playback failure is `Scene {index} clip could not be played.` in a `role="status"`. Starting one scene clip pauses any other | `Play scene 7 clip` |
 | Rebuild a generated scene (image and clip) | `Rebuild scene {index}` (opens a form named `Rebuild scene {index}`; submit `Rebuild image and clip`) | `Rebuild scene 7` |
 | Retry a failed voice-over (JOS-155) | `Retry voice-over` (the same shared `PhaseRetryButton`; offered only when the failure is `retryable`) | `Retry voice-over` |
 | Retry a failed decomposition | `Retry decomposition` (the shared `PhaseRetryButton`, rendered by `PhaseSection` from `phaseActions`) | `Retry decomposition` |
