@@ -244,7 +244,7 @@ Confirming SHALL create the take.
 A session-level panel SHALL show the latest open take:
 - while generating, which scenes are being read again;
 - while waiting for review, an audio player for its preview with "Keep new narration" and "Discard";
-- when failed, its cause and "Dismiss".
+- when failed: that the new reading of its scenes could not be used, then its cause, then that the narration and the final video were not changed and that the User can read those scenes again with Redo narration; and "Dismiss".
 
 A scene covered by a kept take SHALL show "Narration redone" on its card. Refusals SHALL be shown as sentences, not codes. Every control SHALL work with the keyboard and name its scenes.
 
@@ -257,6 +257,10 @@ A scene covered by a kept take SHALL show "Narration redone" on its card. Refusa
 - **WHEN** the take is waiting for review
 - **THEN** the panel shows its preview player with Keep new narration and Discard
 - **AND** after Keep, the panel disappears, scenes 1 and 2 show "Narration redone", no rebuild is running, and "Rebuild final video" is offered
+
+#### Scenario: A failed take explains itself
+- **GIVEN** a take of scene 4 failed because its reading is too long by 1.9 s
+- **THEN** the panel says "The new reading of scene 4 could not be used. Scene 4's new reading is too long by 1.9 s at its normal speed. The narration and the final video were not changed. Use Redo narration on scene 4 to read it again.", and offers Dismiss
 
 #### Scenario: No action while a take is open
 - **GIVEN** a take is waiting for review

@@ -227,12 +227,26 @@ describe("NarrationTakePanel (task 5.3)", () => {
     expect(takes.discard).toHaveBeenCalledWith("t1");
   });
 
-  it("shows a failed take's cause, and dismisses it", async () => {
+  it("says a failed take's reading was not used, why, and that nothing changed, and dismisses it", async () => {
     const takes = handlers();
-    render(<NarrationTakePanel narration={{ version: 1, take: { takeId: "t1", state: "failed", firstSceneIndex: 3, lastSceneIndex: 3, failure: "Scene 3's new reading is too long." } }} handlers={takes} />);
-    expect(screen.getByRole("alert")).toHaveTextContent("Scene 3's new reading is too long.");
+    render(
+      <NarrationTakePanel
+        narration={{ version: 1, take: { takeId: "t1", state: "failed", firstSceneIndex: 4, lastSceneIndex: 4, failure: "Scene 4's new reading is too long by 1.9 s at its normal speed." } }}
+        handlers={takes}
+      />,
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "The new reading of scene 4 could not be used. Scene 4's new reading is too long by 1.9 s at its normal speed. The narration and the final video were not changed. Use Redo narration on scene 4 to read it again.",
+    );
     await userEvent.setup().click(screen.getByRole("button", { name: "Dismiss" }));
     expect(takes.discard).toHaveBeenCalledWith("t1");
+  });
+
+  it("names every scene of a failed take of several scenes", () => {
+    render(<NarrationTakePanel narration={{ version: 1, take: { takeId: "t1", state: "failed", firstSceneIndex: 2, lastSceneIndex: 3, failure: "The provider did not answer." } }} handlers={handlers()} />);
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "The new reading of scenes 2 to 3 could not be used. The provider did not answer. The narration and the final video were not changed. Use Redo narration on scene 2 to read them again.",
+    );
   });
 
   it("follows live updates and shows a refusal as a sentence", async () => {

@@ -121,7 +121,7 @@
 - [x] 5.3 Failing component tests for `NarrationTakePanel`:
   - while generating, the scene range;
   - while ready, an audio player with `preload="none"` plus Keep new narration and Discard;
-  - when failed, the cause and Dismiss;
+  - when failed, the cause and Dismiss, inside a message that says the new reading of its scenes could not be used, that the narration and the final video were not changed, and that the User can redo those scenes;
   - hidden when there is no open take;
   - live updates
 - [x] 5.4 Implement the form, the panel, the "Narration redone" badge and the styles: both themes, 375 px width with no horizontal scroll
