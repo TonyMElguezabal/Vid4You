@@ -32,6 +32,7 @@ import {
   getRun,
   getSceneForRun,
   getNarrationTake,
+  currentNarration,
   insertRegisteredScenes,
   commitSceneResult,
   markImageComplete,
@@ -337,6 +338,7 @@ const sessionResponseSchema = z.object({
   narration: z
     .object({
       version: z.number().int().min(1).describe("1 for the original voice-over; one more for each kept narration take."),
+      audioUrl: z.string().describe("listen-to-voice-over: the current narration, inline, with byte ranges. Its `v` query is the version, so a kept take gives a new URL."),
       take: z
         .object({
           takeId: z.string(),
@@ -427,10 +429,14 @@ function storedSceneFile(sessionId: string, sceneId: string, storedPathOf: (scen
   const scene = getSceneForRun(sessionId, sceneId);
   const storedPath = scene ? storedPathOf(scene) : null;
   const run = storedPath ? getRun(sessionId) : undefined;
-  if (!storedPath || !run) return null;
+  return storedPath && run ? storedRunFile(run.projectFolder, storedPath) : null;
+}
+
+/** The full path of a stored file of a session, or null when it resolves outside the project folder or is missing. */
+function storedRunFile(projectFolder: string, storedPath: string): string | null {
   let fullPath: string;
   try {
-    fullPath = resolveArtefactPath(run.projectFolder, storedPath);
+    fullPath = resolveArtefactPath(projectFolder, storedPath);
   } catch {
     return null;
   }
@@ -1018,6 +1024,40 @@ export const routes: FastifyPluginAsync = async (app) => {
         return { ok: false, reason: "take has no preview" };
       }
       return sendFileWithRanges(reply, resolveArtefactPath(run.projectFolder, take.previewPath), "audio/mp4", request.headers.range);
+    },
+  );
+
+  // listen-to-voice-over, design Decision 1 — the session's current narration, inline, for the Voice-over player.
+  typed.get(
+    "/sessions/:sessionId/narration/audio",
+    {
+      config: {
+        swaggerTransform: (input: Parameters<typeof jsonSchemaTransform>[0]) => {
+          const out = binaryFileSwaggerTransform("audio/mpeg", "The current narration, inline, with Accept-Ranges: bytes: the voice-over (audio/mpeg), or a kept take's narration (audio/flac)")(input);
+          const response = out.schema.response;
+          response["206"] = { description: "The requested byte range, with Content-Range", content: { "audio/mpeg": { schema: { type: "string", format: "binary" } } } };
+          response["416"] = { description: "The range starts at or past the end of the file; Content-Range: bytes */size" };
+          return out;
+        },
+      },
+      schema: {
+        description:
+          "listen-to-voice-over: the session's current narration for the Voice-over player, from the moment the voice-over is stored. " +
+          "The original voice-over is audio/mpeg; after a kept narration take, the latest version is audio/flac. Byte ranges as the scene clip. " +
+          "A `v` query (the version in narration.audioUrl) is ignored: the current version is always served.",
+        params: sessionParamsSchema,
+        response: { 200: z.any(), 206: z.any(), 404: conflictSchema, 416: z.any() },
+      },
+    },
+    async (request, reply) => {
+      const run = getRun(request.params.sessionId);
+      const narration = run ? currentNarration(run.id) : undefined;
+      const fullPath = run && narration ? storedRunFile(run.projectFolder, narration.audioPath) : null;
+      if (!narration || !fullPath) {
+        reply.code(404);
+        return { ok: false, reason: "session has no stored voice-over" };
+      }
+      return sendFileWithRanges(reply, fullPath, narration.spliced ? "audio/flac" : "audio/mpeg", request.headers.range);
     },
   );
 

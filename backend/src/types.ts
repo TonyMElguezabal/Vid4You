@@ -439,6 +439,8 @@ export interface SessionEventPayload {
 /** The session's narration version, and its latest take while generating, waiting for review, or failed and not dismissed. */
 export interface NarrationView {
   version: number;
+  /** listen-to-voice-over, design Decision 2 — the narration audio route, with the version as `v`. */
+  audioUrl: string;
   take?: {
     takeId: string;
     state: "generating" | "ready" | "failed";

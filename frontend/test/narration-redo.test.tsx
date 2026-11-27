@@ -45,7 +45,7 @@ function renderList(options: { scenes?: SceneEventPayload[]; narration?: Narrati
       onRetry={async () => {}}
       onCorrect={async () => {}}
       sessionState={options.sessionState ?? "final-video"}
-      narration={options.narration ?? { version: 1 }}
+      narration={options.narration ?? { version: 1, audioUrl: "/a" }}
       narrationTakes={takes}
     />,
   );
@@ -115,8 +115,8 @@ describe("Redo narration on a scene (task 5.2)", () => {
   });
 
   const notOffered: Array<[string, Parameters<typeof renderList>[0]]> = [
-    ["a take is generating", { narration: { version: 1, take: { takeId: "t", state: "generating", firstSceneIndex: 1, lastSceneIndex: 1 } } }],
-    ["a take waits for review", { narration: { version: 1, take: { takeId: "t", state: "ready", firstSceneIndex: 1, lastSceneIndex: 1, previewUrl: "/p" } } }],
+    ["a take is generating", { narration: { version: 1, audioUrl: "/a", take: { takeId: "t", state: "generating", firstSceneIndex: 1, lastSceneIndex: 1 } } }],
+    ["a take waits for review", { narration: { version: 1, audioUrl: "/a", take: { takeId: "t", state: "ready", firstSceneIndex: 1, lastSceneIndex: 1, previewUrl: "/p" } } }],
     ["the session is assembling", { sessionState: "final-video-generating" }],
     ["the scene cannot be redone", { scenes: [scene(1, { narrationRedoable: undefined }), scene(2)] }],
   ];
@@ -127,7 +127,7 @@ describe("Redo narration on a scene (task 5.2)", () => {
   });
 
   it("is offered after a failed take", async () => {
-    renderList({ narration: { version: 1, take: { takeId: "t", state: "failed", firstSceneIndex: 1, lastSceneIndex: 1, failure: "No." } } });
+    renderList({ narration: { version: 1, audioUrl: "/a", take: { takeId: "t", state: "failed", firstSceneIndex: 1, lastSceneIndex: 1, failure: "No." } } });
     await openDetails(1);
     expect(screen.getByRole("button", { name: "Redo scene 1 narration" })).toBeInTheDocument();
   });
@@ -202,18 +202,18 @@ describe("Redo narration on a scene (task 5.2)", () => {
 
 describe("NarrationTakePanel (task 5.3)", () => {
   it("is hidden when there is no open take", () => {
-    const { container } = render(<NarrationTakePanel narration={{ version: 2 }} handlers={handlers()} />);
+    const { container } = render(<NarrationTakePanel narration={{ version: 2, audioUrl: "/a" }} handlers={handlers()} />);
     expect(container).toBeEmptyDOMElement();
   });
 
   it("says which scenes are being read again", () => {
-    render(<NarrationTakePanel narration={{ version: 1, take: { takeId: "t", state: "generating", firstSceneIndex: 1, lastSceneIndex: 2 } }} handlers={handlers()} />);
+    render(<NarrationTakePanel narration={{ version: 1, audioUrl: "/a", take: { takeId: "t", state: "generating", firstSceneIndex: 1, lastSceneIndex: 2 } }} handlers={handlers()} />);
     expect(screen.getByRole("region", { name: "New narration" })).toHaveTextContent("Scenes 1 to 2 are being read again.");
   });
 
   it("offers the preview, Keep new narration and Discard while it waits for review", async () => {
     const takes = handlers();
-    render(<NarrationTakePanel narration={{ version: 1, take: { takeId: "t1", state: "ready", firstSceneIndex: 1, lastSceneIndex: 1, previewUrl: "/sessions/s1/narration-takes/t1/preview" } }} handlers={takes} />);
+    render(<NarrationTakePanel narration={{ version: 1, audioUrl: "/a", take: { takeId: "t1", state: "ready", firstSceneIndex: 1, lastSceneIndex: 1, previewUrl: "/sessions/s1/narration-takes/t1/preview" } }} handlers={takes} />);
     const player = screen.getByLabelText("New narration of scene 1");
     expect(player.tagName).toBe("AUDIO");
     expect(player).toHaveAttribute("preload", "none");
@@ -231,7 +231,7 @@ describe("NarrationTakePanel (task 5.3)", () => {
     const takes = handlers();
     render(
       <NarrationTakePanel
-        narration={{ version: 1, take: { takeId: "t1", state: "failed", firstSceneIndex: 4, lastSceneIndex: 4, failure: "Scene 4's new reading is too long by 1.9 s at its normal speed." } }}
+        narration={{ version: 1, audioUrl: "/a", take: { takeId: "t1", state: "failed", firstSceneIndex: 4, lastSceneIndex: 4, failure: "Scene 4's new reading is too long by 1.9 s at its normal speed." } }}
         handlers={takes}
       />,
     );
@@ -243,7 +243,7 @@ describe("NarrationTakePanel (task 5.3)", () => {
   });
 
   it("names every scene of a failed take of several scenes", () => {
-    render(<NarrationTakePanel narration={{ version: 1, take: { takeId: "t1", state: "failed", firstSceneIndex: 2, lastSceneIndex: 3, failure: "The provider did not answer." } }} handlers={handlers()} />);
+    render(<NarrationTakePanel narration={{ version: 1, audioUrl: "/a", take: { takeId: "t1", state: "failed", firstSceneIndex: 2, lastSceneIndex: 3, failure: "The provider did not answer." } }} handlers={handlers()} />);
     expect(screen.getByRole("alert")).toHaveTextContent(
       "The new reading of scenes 2 to 3 could not be used. The provider did not answer. The narration and the final video were not changed. Use Redo narration on scene 2 to read them again.",
     );
@@ -251,10 +251,10 @@ describe("NarrationTakePanel (task 5.3)", () => {
 
   it("follows live updates and shows a refusal as a sentence", async () => {
     const takes = handlers({ keep: vi.fn(async () => Promise.reject(new Error("assembly-in-progress"))) });
-    const generating: NarrationView = { version: 1, take: { takeId: "t1", state: "generating", firstSceneIndex: 1, lastSceneIndex: 1 } };
+    const generating: NarrationView = { version: 1, audioUrl: "/a", take: { takeId: "t1", state: "generating", firstSceneIndex: 1, lastSceneIndex: 1 } };
     const { rerender } = render(<NarrationTakePanel narration={generating} handlers={takes} />);
     expect(screen.queryByRole("button", { name: "Keep new narration" })).not.toBeInTheDocument();
-    act(() => rerender(<NarrationTakePanel narration={{ version: 1, take: { ...generating.take!, state: "ready", previewUrl: "/p" } }} handlers={takes} />));
+    act(() => rerender(<NarrationTakePanel narration={{ version: 1, audioUrl: "/a", take: { ...generating.take!, state: "ready", previewUrl: "/p" } }} handlers={takes} />));
     await userEvent.setup().click(screen.getByRole("button", { name: "Keep new narration" }));
     expect(await screen.findByRole("status")).toHaveTextContent(narrationTakeRefusalSentence("assembly-in-progress"));
   });

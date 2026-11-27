@@ -570,7 +570,7 @@ describe("Accessible naming convention (Decision 5)", () => {
     expect(await screen.findByRole("button", { name: "Read scene 7 again" })).toBeInTheDocument();
 
     const handlers = { quote, create: async () => {}, keep: async () => {}, discard: async () => {} };
-    render(<NarrationTakePanel narration={{ version: 1, take: { takeId: "t", state: "ready", firstSceneIndex: 7, lastSceneIndex: 8, previewUrl: "/p" } }} handlers={handlers} />);
+    render(<NarrationTakePanel narration={{ version: 1, audioUrl: "/a", take: { takeId: "t", state: "ready", firstSceneIndex: 7, lastSceneIndex: 8, previewUrl: "/p" } }} handlers={handlers} />);
     expect(screen.getByRole("region", { name: "New narration" })).toBeInTheDocument();
     expect(screen.getByLabelText("New narration of scenes 7 to 8")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Keep new narration" })).toBeInTheDocument();

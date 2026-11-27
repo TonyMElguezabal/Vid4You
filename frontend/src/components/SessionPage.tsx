@@ -7,6 +7,7 @@ import { FinalVideoDownload } from "./FinalVideoDownload";
 import { NarrationTakePanel, type NarrationTakeHandlers } from "./NarrationTakePanel";
 import { PhaseSection } from "./PhaseSection";
 import { PhaseStepper } from "./PhaseStepper";
+import { VoiceOverPlayer } from "./VoiceOverPlayer";
 import { Icon } from "./Icon";
 import { resolveResultUrl } from "../api/client";
 
@@ -132,6 +133,10 @@ export function SessionPage({
         <PhaseStepper phases={session.phases} />
         {session.phases.map((progress) => (
           <PhaseSection key={progress.phase} progress={progress} onRetry={() => onRetryPhase(progress.phase)}>
+            {/* listen-to-voice-over, design Decision 4 — from the moment the voice-over is stored; a new version remounts it. */}
+            {progress.phase === "voice-over" && session.narration?.audioUrl && (
+              <VoiceOverPlayer key={session.narration.audioUrl} src={resolveResultUrl(session.narration.audioUrl)} />
+            )}
             {progress.phase === "scenes" && (
               <SceneList scenes={scenes} paused={session.paused} onRetry={onRetry} onCorrect={onCorrect} onSetPause={onSetPause} onRebuild={onRebuildScene} sessionState={session.state} narration={session.narration} narrationTakes={narrationTakes} />
             )}

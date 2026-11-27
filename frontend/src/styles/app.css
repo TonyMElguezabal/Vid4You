@@ -1026,9 +1026,9 @@ progress::-moz-progress-bar {
   aspect-ratio: 16 / 9;
 }
 
-/* watch-scene-clips (JOS-281) — the clip player: in the thumbnail's place on a collapsed card, at the top of the
- * media column once expanded. */
-.scene-clip-player {
+/* watch-scene-clips (JOS-281), listen-to-voice-over — a media player (a scene clip or the voice-over). The clip player
+ * sits in the thumbnail's place on a collapsed card, and at the top of the media column once expanded. */
+.media-player {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
@@ -1038,26 +1038,31 @@ progress::-moz-progress-bar {
   border-radius: 0;
 }
 
-.scene-clip-controls {
+.media-controls {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
 }
 
-.scene-row > .scene-clip-player .scene-clip-controls,
+.scene-row > .scene-clip-player .media-controls,
 .scene-row > .scene-clip-player [role="status"] {
   padding: 0 var(--space-3);
 }
 
-.scene-clip-controls button {
+.media-controls button {
   padding: 0.3rem 0.65rem;
   font-size: var(--font-size-sm);
 }
 
-.scene-clip-player [role="status"] {
+.media-player [role="status"] {
   margin: 0;
   font-size: var(--font-size-sm);
   color: var(--color-status-failed);
+}
+
+/* listen-to-voice-over — the voice-over player under the Voice-over section's stages. */
+.voice-over-player {
+  margin-top: var(--space-3);
 }
 
 .correction-form {

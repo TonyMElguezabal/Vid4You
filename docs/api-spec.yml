@@ -28,6 +28,10 @@
 # session read gains `session.narration` (`version`, and the open `take`), and each scene `narrationRedone` and
 # `narrationRedoable`. `finalVideo.staleScenes` is also true after a kept take. The quote is the only answer with script text.
 #
+# listen-to-voice-over - 2026-11-27: new path `GET /sessions/{sessionId}/narration/audio`, generated from the running app
+# (`app.swagger()`): the current narration inline (`audio/mpeg`, or `audio/flac` after a kept take), 200/206/416 like the
+# scene clip, 404 when the session has no stored voice-over. `session.narration` gains the required `audioUrl`.
+#
 # watch-scene-clips (JOS-281) - 2026-11-26: new path `GET /sessions/{sessionId}/scenes/{sceneId}/clip`, generated
 # from the running app (`app.swagger()`): the stored clip inline, 200 or 206 (`video/mp4`, binary, via a route-level
 # `swaggerTransform` like the final-video download), 404, 416 for a range past the end (no body; the generator still
@@ -590,6 +594,10 @@ paths:
                             minimum: 1
                             description: 1 for the original voice-over; one more for each kept narration
                               take.
+                          audioUrl:
+                            type: string
+                            description: "listen-to-voice-over: the current narration, inline, with byte ranges.
+                              Its `v` query is the version, so a kept take gives a new URL."
                           take:
                             type: object
                             properties:
@@ -623,6 +631,7 @@ paths:
                               failed and not yet discarded.
                         required:
                           - version
+                          - audioUrl
                         additionalProperties: false
                         description: "redo-scene-narration (JOS-282): present once the narration exists.
                           Derived on every read; never carries the script's
@@ -1299,6 +1308,10 @@ paths:
                             minimum: 1
                             description: 1 for the original voice-over; one more for each kept narration
                               take.
+                          audioUrl:
+                            type: string
+                            description: "listen-to-voice-over: the current narration, inline, with byte ranges.
+                              Its `v` query is the version, so a kept take gives a new URL."
                           take:
                             type: object
                             properties:
@@ -1332,6 +1345,7 @@ paths:
                               failed and not yet discarded.
                         required:
                           - version
+                          - audioUrl
                         additionalProperties: false
                         description: "redo-scene-narration (JOS-282): present once the narration exists.
                           Derived on every read; never carries the script's
@@ -3049,6 +3063,59 @@ paths:
           description: The requested byte range, with Content-Range
           content:
             audio/mp4:
+              schema:
+                type: string
+                format: binary
+        "404":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  reason:
+                    type: string
+                required:
+                  - ok
+                  - reason
+                additionalProperties: false
+        "416":
+          description: "The range starts at or past the end of the file; Content-Range:
+            bytes */size"
+          content:
+            application/json:
+              schema:
+                description: "The range starts at or past the end of the file; Content-Range:
+                  bytes */size"
+  /sessions/{sessionId}/narration/audio:
+    get:
+      description: "listen-to-voice-over: the session's current narration for the
+        Voice-over player, from the moment the voice-over is stored. The original
+        voice-over is audio/mpeg; after a kept narration take, the latest version
+        is audio/flac. Byte ranges as the scene clip. A `v` query (the version in
+        narration.audioUrl) is ignored: the current version is always served."
+      parameters:
+        - schema:
+            type: string
+            pattern: ^[0-9A-HJKMNP-TV-Z]{26}$
+          in: path
+          name: sessionId
+          required: true
+      responses:
+        "200":
+          description: "The current narration, inline, with Accept-Ranges: bytes: the
+            voice-over (audio/mpeg), or a kept take's narration (audio/flac)"
+          content:
+            audio/mpeg:
+              schema:
+                type: string
+                format: binary
+        "206":
+          description: The requested byte range, with Content-Range
+          content:
+            audio/mpeg:
               schema:
                 type: string
                 format: binary

@@ -90,6 +90,7 @@ describe("POST …/narration-takes, keep and discard", () => {
     const take = getNarrationTakes(runId)[0]!;
     expect(snapshot.session.narration).toEqual({
       version: 1,
+      audioUrl: `/sessions/${runId}/narration/audio?v=1`,
       take: { takeId: take.id, state: "ready", firstSceneIndex: 1, lastSceneIndex: 2, previewUrl: `/sessions/${runId}/narration-takes/${take.id}/preview` },
     });
     expect(snapshot.scenes.map((scene) => [scene.narrationRedoable, scene.narrationRedone])).toEqual([[true, undefined], [true, undefined]]);
@@ -107,7 +108,12 @@ describe("POST …/narration-takes, keep and discard", () => {
     expect(kept.statusCode).toBe(200);
     expect(kept.json()).toEqual({ ok: true });
     const snapshot = await read(runId);
-    expect(snapshot.session.narration).toEqual({ version: 2 });
+    // listen-to-voice-over — the new version has a new URL, and the route serves the kept take's FLAC.
+    expect(snapshot.session.narration).toEqual({ version: 2, audioUrl: `/sessions/${runId}/narration/audio?v=2` });
+    const audio = await app.inject({ method: "GET", url: `/sessions/${runId}/narration/audio?v=2` });
+    expect(audio.statusCode).toBe(200);
+    expect(audio.headers["content-type"]).toBe("audio/flac");
+    expect(audio.body).toBe("flac");
     expect(snapshot.scenes.map((scene) => scene.narrationRedone)).toEqual([true, true]);
     expect(snapshot.session.finalVideo).toMatchObject({ version: 1, staleScenes: true });
     expect(snapshot.session.state).toBe("final-video");

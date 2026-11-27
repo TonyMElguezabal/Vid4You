@@ -270,7 +270,7 @@ describe("Rebuild final video on the session page (design Decision 9)", () => {
 
   it("is not offered while a narration take waits for review", () => {
     const scenes = [makeScene({ sceneId: "a", index: 1 }), makeScene({ sceneId: "b", index: 2 })];
-    const narration = { version: 1, take: { takeId: "t1", state: "ready" as const, firstSceneIndex: 1, lastSceneIndex: 2, previewUrl: "/p" } };
+    const narration = { version: 1, audioUrl: "/a", take: { takeId: "t1", state: "ready" as const, firstSceneIndex: 1, lastSceneIndex: 2, previewUrl: "/p" } };
     render(<SessionPage {...props} snapshot={{ session: { ...session, narration }, scenes }} />);
 
     expect(screen.queryByRole("button", { name: "Rebuild final video" })).not.toBeInTheDocument();

@@ -76,14 +76,15 @@ describe("The API offers no operation that modifies the locked content (AC1)", (
     expect(routes).not.toMatch(/\bDELETE\b/);
   });
 
-  it("offers no route that names the voice-over or narration, except the retry (JOS-155) and the narration takes (JOS-282)", () => {
+  it("offers no route that names the voice-over or narration, except the retry (JOS-155), the narration takes (JOS-282) and the narration audio", () => {
     // retry-voice-over (JOS-155): a retry sends the stored script again and takes no input, so it cannot replace
     // the narration; it is the one route allowed to name it.
     // redo-scene-narration (JOS-282): a narration take writes its own files and record, never the locked voice-over or
     // its timestamps, so its routes are the other allowed names.
+    // listen-to-voice-over, design Decision 6: the Voice-over player's inline route only reads the current narration.
     const routes = offeredRoutes()
       .split("\n")
-      .filter((line) => !line.includes("voice-over/retry") && !line.includes("narration-takes"))
+      .filter((line) => !line.includes("voice-over/retry") && !line.includes("narration-takes") && !/\/narration\/audio \(/.test(line))
       .join("\n");
     expect(routes).not.toMatch(/voice|narration|audio|mp3/i);
   });
