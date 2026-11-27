@@ -9,7 +9,7 @@
 
 **Scene boundaries.** Under D11 (PRD §7.3), a scene's interval starts exactly where its speech starts. The pause after the speech belongs to the scene.
 
-**Staleness.** `runs.final_video_stale` means "the final video predates a rebuilt scene". `triggerAssemblyIfReady` uses it to rebuild automatically once every scene is complete.
+**Staleness.** `runs.final_video_stale` means "the final video predates a rebuilt scene". Before this change, `triggerAssemblyIfReady` used it to rebuild automatically once every scene was complete (see Decision 15, which removes that).
 
 **The manual fix (2026-11-26, JOS-282).** A one-sentence take spliced between the original sentences sounded cut. The intonation did not follow, and the added pauses were noticeable. A take of scenes 1 and 2, sent with the following text as context, fitted with a 2% speed change and joined once in a −63 dB pause, could not be told from the original. ElevenLabs `/with-timestamps` returns character timestamps for exactly the text sent.
 
@@ -22,7 +22,7 @@
 - a quote and confirmation before any cost;
 - inaudible joins, with the narration's exact length kept;
 - review before keeping;
-- an automatic final-video rebuild;
+- a final-video rebuild that the User starts after checking the scenes (Decision 15);
 - nothing overwritten;
 - takes counted in the reports.
 
@@ -65,6 +65,7 @@
      - **Cuts:** each scene part is cut from 50 ms before `s` (less if the take has less silence there) to the middle of the take's following pause. It is placed so that `s` lands on the interval's start, and its pause is changed at the middle, like `buildNarrationFilter`.
    - A second pure function turns the plan into one ffmpeg filtergraph: `atrim`, `atempo`, `anullsrc`, `afade` 10 ms on the take's side only (the base stays untouched), `concat`. The graph covers base `[0, A−lead)`, the fitted parts, and base `[B−lead, end)`, where A and B are the section's interval bounds.
    - The output is checked for an exact sample count against the decoded base narration.
+   - Every part ends at or before the base's last decoded sample. The last scene's interval ends at the MP3's reported duration, which includes the encoder padding (32 ms in a 12-minute session, found by a take of scene 62 on 2026-11-27). Without the limit, a section reaching the end would be that much longer than the base, and the length check would reject it.
    - Alternative considered: `silencedetect`. Rejected, because it depends on a threshold, while the timestamps already give the speech spans and the cuts sit outside them.
 
 4. **The spliced narration is stored as FLAC and encoded once at the mux.**
@@ -93,13 +94,8 @@
      - no assembly is in flight;
      - no rebuild is requested.
    - It then sets `kept` and `decided_at`, deletes the pause edits of the take's scenes, and sets `final_video_stale = 1` when a final video exists.
-   - After commit, `triggerAssemblyIfReady` runs (exported through a small `rebuildWhenReady`) and the session is broadcast.
-   - The stale flag now means "the final video predates the current scenes or narration". Its existing uses are unchanged:
-     - the automatic rebuild;
-     - "Rebuild final video" acceptance;
-     - held work on continue;
-     - restart.
-   - A paused session keeps the rebuild held until continue, through the existing gate.
+   - After commit, the session is broadcast. No assembly is launched (Decision 15).
+   - The stale flag now means "the final video predates the current scenes or narration". It makes "Rebuild final video" acceptable, and the page offers that action and explains why.
    - Alternative considered: recording the narration version in `final_video_builds`. Rejected: the flag already drives every behaviour.
 
 8. **Data model: `narration_takes`.** A new migration creates it with these columns:
@@ -152,6 +148,16 @@
     - 1,000 characters of context;
     - 3 s of preview context;
     - ±6 dB gain.
+
+15. **No automatic rebuild of an existing final video.**
+   - A rebuilt section must be checked before it reaches the final video. The User may want to rebuild other scenes, redo a narration again, or adjust pauses first, and each automatic rebuild costs minutes of encoding.
+   - `triggerAssemblyIfReady` launches a session that has a final video only when a rebuild was requested (`rebuild_requested_at`, set by `rebuildFinalVideo`). A stale final video alone launches nothing.
+   - The assembly launcher's held work no longer counts a stale final video, so continue does not rebuild it. Boot already ignored it.
+   - `rebuildWhenReady` is removed: keeping a take only marks the final video stale.
+   - `rebuildFinalVideo` refuses with `take-in-progress` while a take is `generating` or `ready`, checked from the store before the request is recorded. Together with `take-in-progress` on create and `assembly-in-progress` on keep, an assembly never runs while a take is open.
+   - A session with no final video keeps its automatic first assembly, including after a scene rebuild in a session failed at assembly.
+   - The page: `FinalVideoDownload` hides "Rebuild final video" while a take is open and says "Keep or discard the new narration before rebuilding the final video." While the final video is stale, it says "This version predates your changes. Check every scene, then rebuild the final video."
+   - Alternative considered: keep the automatic rebuild and only hold it while a take is open. Rejected: the User asked to check every rebuilt section first, for scene rebuilds too.
 
 ## Risks / Trade-offs
 

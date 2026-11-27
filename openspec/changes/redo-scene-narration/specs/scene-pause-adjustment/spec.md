@@ -34,12 +34,13 @@ The system SHALL accept a rebuild command only when all of these hold:
 - the session has a final video;
 - no assembly is running;
 - every scene is `chunk-complete`;
+- no narration take is generating or waiting for review (spec `scene-narration-redo`);
 - at least one of these is true:
   - the current edits differ from those the current final video was built with;
   - a scene was rebuilt after the current final video was built (`staleScenes`, spec `scene-rebuild`);
   - a narration take was kept after it was built (spec `scene-narration-redo`).
 
-Otherwise it SHALL refuse with 409 and a reason, using `scenes-not-complete` while any scene is not `chunk-complete`.
+Otherwise it SHALL refuse with 409 and a reason, using `scenes-not-complete` while any scene is not `chunk-complete` and `take-in-progress` while a take is open. A rebuild of a final video with a final video SHALL start only on this command: neither a scene rebuild, a kept take, continuing the session nor a restart starts one.
 
 Keeping a narration take SHALL remove the pause edits of the take's scenes. Their pauses are derived again from the take.
 
@@ -65,13 +66,13 @@ On success it SHALL write a new file `final-video-<version>.mp4`, record the ver
 
 #### Scenario: A rebuilt scene makes the final video stale
 
-- **GIVEN** a final video whose automatic rebuild after a scene rebuild failed
+- **GIVEN** a final video older than a rebuilt scene
 - **WHEN** the User rebuilds
 - **THEN** the command is accepted even with no pause edits, and the new version uses the rebuilt scene's clip
 
 #### Scenario: A kept narration take makes the final video stale
 
-- **GIVEN** a final video whose automatic rebuild after a kept narration take failed
+- **GIVEN** a final video older than a kept narration take
 - **WHEN** the User rebuilds
 - **THEN** the command is accepted even with no pause edits, and the new version uses the take's narration
 
@@ -86,6 +87,12 @@ On success it SHALL write a new file `final-video-<version>.mp4`, record the ver
 - **GIVEN** a final video with pause edits pending, and scene 6 being rebuilt (`image-generating`)
 - **WHEN** the User rebuilds the final video
 - **THEN** the command is refused with 409 `scenes-not-complete` and no assembly starts
+
+#### Scenario: A narration take is waiting for review
+
+- **GIVEN** a final video older than a rebuilt scene, and a narration take waiting for review
+- **WHEN** the User rebuilds
+- **THEN** the command is refused with 409 `take-in-progress` and no assembly starts
 
 #### Scenario: A rebuild while one is running
 

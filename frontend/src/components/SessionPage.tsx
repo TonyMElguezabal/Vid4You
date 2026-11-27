@@ -144,6 +144,7 @@ export function SessionPage({
                 rebuilding={session.state === "final-video-generating" && Boolean(session.finalVideoUrl)}
                 // rebuild-scene (JOS-235), Decision 9 — offered only while every scene is complete; the backend refuses it otherwise.
                 onRebuild={scenes.length > 0 && scenes.every((scene) => scene.state === "chunk-complete") ? onRebuildFinalVideo : undefined}
+                takeOpen={session.narration?.take?.state === "generating" || session.narration?.take?.state === "ready"}
               />
             )}
           </PhaseSection>

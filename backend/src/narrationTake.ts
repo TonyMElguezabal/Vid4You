@@ -10,6 +10,7 @@ import {
   failNarrationTake,
   getNarrationTake,
   getNarrationTakes,
+  hasOpenNarrationTake,
   getRun,
   getScenePauseEdits,
   getScenesForRun,
@@ -27,7 +28,7 @@ import { providerPricing } from "./estimatedCostReport.ts";
 import { matchGain, measureSpeech, probeDurationSeconds, spliceNarration, writePreview } from "./narrationTakeAudio.ts";
 import { planTakeFit, spliceTimestamps, type TakeFitScene } from "./narrationTakeFit.ts";
 import { checkTimestamps, parseNativeTimestamps, type TimestampCharacter } from "./narrationTimestamps.ts";
-import { broadcast, rebuildWhenReady } from "./orchestrator.ts";
+import { broadcast } from "./orchestrator.ts";
 import { locateFragment, PAUSE_CAP_SECONDS } from "./scenePause.ts";
 import { sentenceSpeechSpans, type SpeechSpan } from "./sentenceTimings.ts";
 import { readStoredCharacters } from "./sessionPauses.ts";
@@ -225,7 +226,6 @@ export function quoteNarrationTake(sessionId: string, firstSceneId: string, last
 const assemblyInProgress = (run: Run): boolean =>
   run.rebuildRequestedAt !== null || getStageAttempts(run.id, "assembly").some((attempt) => attempt.outcome === "in-flight");
 
-const hasOpenTake = (runId: string): boolean => getNarrationTakes(runId).some((take) => take.state === "generating" || take.state === "ready");
 
 /** The context on one side: at most 1,000 characters, cut at a whitespace so no word is split. */
 export function contextBefore(script: string, at: number): string {
@@ -248,7 +248,7 @@ export function createNarrationTake(sessionId: string, firstSceneId: string, las
   const selected = selectScenes(sessionId, firstSceneId, lastSceneId);
   if (!selected.ok) return selected;
   const { selection } = selected;
-  if (hasOpenTake(sessionId)) return { ok: false, reason: "take-in-progress" };
+  if (hasOpenNarrationTake(sessionId)) return { ok: false, reason: "take-in-progress" };
   if (assemblyInProgress(selection.run)) return { ok: false, reason: "assembly-in-progress" };
   const take = insertNarrationTake({
     runId: sessionId,
@@ -450,7 +450,6 @@ export function keepNarrationTake(sessionId: string, takeId: string, now: () => 
   });
   if (decided.ok) {
     logger.info({ event: "narration-take.kept", sessionId, takeId });
-    rebuildWhenReady(sessionId);
     broadcast(sessionId);
   }
   return decided;

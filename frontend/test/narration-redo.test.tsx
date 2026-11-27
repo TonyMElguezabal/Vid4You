@@ -150,7 +150,7 @@ describe("Redo narration on a scene (task 5.2)", () => {
     expect(within(form).getByText("Estimated cost: 0.0017 USD")).toBeInTheDocument();
     expect(within(form).getByText("The pause you set on scene 2 will be reset.")).toBeInTheDocument();
     expect(within(form).getByText(/The voice provider reads this text again, and the reading is billed\./)).toBeInTheDocument();
-    expect(within(form).getByText(/You can listen to it before you keep it\. Then the final video is rebuilt\./)).toBeInTheDocument();
+    expect(within(form).getByText(/You can listen to it before you keep it\. When you have checked the scenes, rebuild the final video\./)).toBeInTheDocument();
   });
 
   it("says when the price is not set", async () => {

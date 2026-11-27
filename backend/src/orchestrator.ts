@@ -57,7 +57,6 @@ import {
   recordStageAttempt,
   replaceFinalVideoPath,
   resetAttemptsForVideoStart,
-  requestFinalVideoRebuild,
   resolveArtefactPath,
   sceneFileStem,
   sceneCurrentRequestId,
@@ -809,23 +808,12 @@ function triggerAssemblyIfReady(runId: string): void {
   const scenes = getScenesForRun(runId);
   const gate = assemblyGate(scenes);
   if (!gate.open) return;
-  // rebuild-scene (JOS-235), Decision 6 — a session whose final video predates a rebuilt scene gets a new version, the
-  // JOS-190 rebuild: a fresh cycle, the stored pause edits, and the previous version kept until the new one succeeds.
-  // Any other session (first assembly, or one whose assembly failed) takes the normal path.
-  // A rebuild the User asked for (`rebuildFinalVideo` records it first) is already requested and just launches.
+  // redo-scene-narration (JOS-282), Decision 15 — a session with a final video is assembled again only when the User asked
+  // for it (`rebuildFinalVideo` records the request first). A rebuilt scene or a kept take only marks it stale, so the
+  // User checks every scene first. Any other session (first assembly, or one whose assembly failed) takes the normal path.
   const run = getRun(runId);
-  if (run?.finalVideoPath && run.finalVideoStale && !run.rebuildRequestedAt && !requestFinalVideoRebuild(runId)) return;
+  if (run?.finalVideoPath && !run.rebuildRequestedAt) return;
   launchAssemblyPhase(runId);
-}
-
-/**
- * redo-scene-narration (JOS-282), design Decision 7 — after a kept take, a final video that predates the narration is
- * rebuilt as after a scene rebuild: once every scene is complete, and held while the session is paused. A session with
- * no final video uses the current narration in its first assembly, which its own flow launches.
- */
-export function rebuildWhenReady(runId: string): void {
-  const run = getRun(runId);
-  if (run?.finalVideoPath && run.finalVideoStale) triggerAssemblyIfReady(runId);
 }
 
 /**
@@ -1251,9 +1239,8 @@ export const assemblyStageLauncher: StageLauncher = {
     const blockedByFailure = run?.failure?.phase === "assembly";
     // adjust-scene-pause (JOS-190), Decision 6 — a rebuild asked for while paused is held work like a first assembly.
     const rebuildPending = run?.finalVideoPath != null && run.rebuildRequestedAt != null;
-    // rebuild-scene (JOS-235), Decision 6 — a final video older than a rebuilt scene is rebuilt on continue.
-    const stale = run?.finalVideoPath != null && run.finalVideoStale && run.rebuildRequestedAt == null;
-    const count = run && (!run.finalVideoPath || rebuildPending || stale) && gate.open && !inFlight && !blockedByFailure ? 1 : 0;
+    // redo-scene-narration (JOS-282), Decision 15 — a stale final video is not held work: only the User's rebuild launches it.
+    const count = run && (!run.finalVideoPath || rebuildPending) && gate.open && !inFlight && !blockedByFailure ? 1 : 0;
     return { count, sceneIds: [] };
   },
   // Stricter than `heldWork` (restart-recovery, Decision 3): boot must not relaunch an assembly whose budget is spent

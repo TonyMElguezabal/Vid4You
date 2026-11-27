@@ -94,7 +94,7 @@ describe("the Rebuild scene form", () => {
     expect(within(form).getByLabelText("IMAGE instruction for scene 4")).toHaveValue("A lighthouse at dusk");
     expect(within(form).getByLabelText("VIDEO instruction for scene 4")).toHaveValue("Slow pan across the sea");
     expect(within(form).getByText(/image and the clip are generated again/i)).toBeInTheDocument();
-    expect(within(form).getByText(/final video is then rebuilt/i)).toBeInTheDocument();
+    expect(within(form).getByText(/When you have checked the scenes, rebuild the final video\./)).toBeInTheDocument();
   });
 
   it("sends only the instructions the User changed", async () => {
@@ -188,6 +188,30 @@ describe("Rebuild final video after a rebuilt scene", () => {
 
     expect(screen.queryByRole("button", { name: "Rebuild final video" })).not.toBeInTheDocument();
   });
+
+  // redo-scene-narration (JOS-282), design Decision 15 — the User checks every scene, then rebuilds.
+  it("says the version predates the changes and asks to check every scene", () => {
+    render(<FinalVideoDownload url="/final" finalVideo={finalVideo} onRebuild={noop} />);
+
+    expect(screen.getByText("This version predates your changes. Check every scene, then rebuild the final video.")).toBeInTheDocument();
+  });
+
+  it("says nothing about changes when the version is current", () => {
+    render(<FinalVideoDownload url="/final" finalVideo={{ ...finalVideo, staleScenes: false }} onRebuild={noop} />);
+
+    expect(screen.queryByText(/predates your changes/)).not.toBeInTheDocument();
+  });
+
+  it("is not offered while a narration take is open, and asks to keep or discard it first", () => {
+    render(<FinalVideoDownload url="/final" finalVideo={finalVideo} takeOpen onRebuild={noop} />);
+
+    expect(screen.queryByRole("button", { name: "Rebuild final video" })).not.toBeInTheDocument();
+    expect(screen.getByText("Keep or discard the new narration before rebuilding the final video.")).toBeInTheDocument();
+  });
+
+  it("names take-in-progress in words", () => {
+    expect(pauseRefusalSentence("take-in-progress")).toBe("A new narration is waiting for review. Keep or discard it first.");
+  });
 });
 
 describe("rebuildScene (API client)", () => {
@@ -242,6 +266,15 @@ describe("Rebuild final video on the session page (design Decision 9)", () => {
     render(<SessionPage {...props} snapshot={{ session, scenes }} />);
 
     expect(screen.getByRole("button", { name: "Rebuild final video" })).toBeInTheDocument();
+  });
+
+  it("is not offered while a narration take waits for review", () => {
+    const scenes = [makeScene({ sceneId: "a", index: 1 }), makeScene({ sceneId: "b", index: 2 })];
+    const narration = { version: 1, take: { takeId: "t1", state: "ready" as const, firstSceneIndex: 1, lastSceneIndex: 2, previewUrl: "/p" } };
+    render(<SessionPage {...props} snapshot={{ session: { ...session, narration }, scenes }} />);
+
+    expect(screen.queryByRole("button", { name: "Rebuild final video" })).not.toBeInTheDocument();
+    expect(screen.getByText("Keep or discard the new narration before rebuilding the final video.")).toBeInTheDocument();
   });
 
   it("says in words that a scene is still being rebuilt when the command is refused anyway", () => {

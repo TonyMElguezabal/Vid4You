@@ -163,7 +163,9 @@ export function buildSpliceFilter(plan: FittingPlan, audio: SpliceAudio): { filt
     segmentSamples.push(keptUntil);
   }
   for (const [i, part] of plan.parts.entries()) {
-    const length = sample(part.outputTo) - sample(part.outputFrom);
+    // Task 2.6 — never past the base's last decoded sample: the last scene's interval ends at the MP3's reported duration,
+    // which includes the encoder padding, so a section reaching the end only loses that much of its final pause.
+    const length = Math.min(sample(part.outputTo), baseTotalSamples) - sample(part.outputFrom);
     const tempo = part.tempo === 1 ? "" : `,atempo=${fixed(part.tempo)}`;
     const fadeIn = sample(part.takeSpeechStart - part.takeFrom) >= fadeSamples ? `,afade=t=in:st=0:d=${fixed(TAKE_JOIN_FADE_SECONDS)}` : "";
     nodes.push(`[l${i}]atrim=start_sample=${sample(part.takeFrom)}:end_sample=${sample(part.takeSpeechStart)},asetpts=N/SR/TB[lead${i}]`);

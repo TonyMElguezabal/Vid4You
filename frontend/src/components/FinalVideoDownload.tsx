@@ -11,6 +11,8 @@ interface Props {
   rebuilding?: boolean;
   /** Starts a rebuild; rejects with the refusal reason. */
   onRebuild?: () => Promise<unknown>;
+  /** redo-scene-narration (JOS-282), Decision 15 — a narration take is generating or waiting for review: no rebuild yet. */
+  takeOpen?: boolean;
 }
 
 /** PRD §12.3 — the final MP4 is offered only when the session read publishes
@@ -22,7 +24,7 @@ interface Props {
  *
  * adjust-scene-pause (JOS-190), Decision 10 — the version, a rebuild only while pause edits are pending, and a
  * failed rebuild's cause. The download always serves the current version, including while a rebuild runs. */
-export function FinalVideoDownload({ url, finalVideo, rebuilding, onRebuild }: Props) {
+export function FinalVideoDownload({ url, finalVideo, rebuilding, onRebuild, takeOpen }: Props) {
   const [pending, setPending] = useState(false);
   const [refusal, setRefusal] = useState<string | null>(null);
   if (!url) return <p className="final-video final-video-pending">Available once every scene is done</p>;
@@ -41,7 +43,8 @@ export function FinalVideoDownload({ url, finalVideo, rebuilding, onRebuild }: P
   }
 
   // rebuild-scene (JOS-235) — also when a scene was rebuilt after this version, e.g. the automatic rebuild did not finish.
-  const offerRebuild = Boolean((finalVideo?.pendingPauseEdits || finalVideo?.staleScenes) && onRebuild && !rebuilding);
+  const changed = Boolean(finalVideo?.pendingPauseEdits || finalVideo?.staleScenes);
+  const offerRebuild = changed && Boolean(onRebuild) && !rebuilding && !takeOpen;
   return (
     <div className="final-video">
       <div className="final-video-actions">
@@ -58,6 +61,11 @@ export function FinalVideoDownload({ url, finalVideo, rebuilding, onRebuild }: P
         )}
       </div>
       {rebuilding && <p className="final-video-note">A new version is being built. The previous version stays available.</p>}
+      {/* redo-scene-narration (JOS-282), Decision 15 — nothing is rebuilt by itself: the User checks every scene first. */}
+      {finalVideo?.staleScenes && !rebuilding && (
+        <p className="final-video-note">This version predates your changes. Check every scene, then rebuild the final video.</p>
+      )}
+      {changed && takeOpen && !rebuilding && <p className="final-video-note">Keep or discard the new narration before rebuilding the final video.</p>}
       {finalVideo?.rebuildFailure && !rebuilding && (
         <div className="callout callout-failed">
           <Icon name="failed" />
