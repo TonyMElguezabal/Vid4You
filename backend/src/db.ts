@@ -2467,6 +2467,30 @@ export function markSceneForRebuild(
 }
 
 /**
+ * rebuild-scene-clip-only, design Decision 2 — returns a complete scene to `image-complete` with only its clip withdrawn,
+ * so the video stage generates a new clip from the stored image. The image, its guard row and `IMAGE` are kept.
+ */
+export function markSceneForClipRebuild(sessionId: string, sceneId: string, videoInstruction?: string): boolean {
+  const instruction = videoInstruction?.trim();
+  const changed = inTransaction((): boolean => {
+    const result = db
+      .prepare(
+        `UPDATE scenes SET status = 'image-complete', video_result = NULL, attempts = 0, last_error = NULL, current_request_id = NULL,
+           video_request_sent_at = NULL, video_request = NULL, rebuild_count = rebuild_count + 1,
+           video_instruction = COALESCE(?, video_instruction), updated_at = ?
+         WHERE id = ? AND run_id = ? AND status = 'chunk-complete' AND result IS NOT NULL AND video_result IS NOT NULL`,
+      )
+      .run(instruction ?? null, nowIso(), sceneId, sessionId);
+    if (Number(result.changes) === 0) return false;
+    db.prepare("DELETE FROM scene_video_results WHERE scene_id = ?").run(sceneId);
+    db.prepare("UPDATE runs SET final_video_stale = 1 WHERE id = ? AND final_video_path IS NOT NULL").run(sessionId);
+    return true;
+  });
+  if (changed && instruction !== undefined) recordCorrectedInstruction(getRun(sessionId)!.projectFolder, sceneId, "videoInstruction", instruction);
+  return changed;
+}
+
+/**
  * retry-or-correct-clip (JOS-158) — the clip correction and transition to the video launch state are atomic.
  * No image, narrative, timing, provider-binding or result field is written here.
  */

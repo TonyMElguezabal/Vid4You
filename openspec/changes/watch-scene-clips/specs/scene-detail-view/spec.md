@@ -165,3 +165,21 @@ Starting a scene clip SHALL pause any other scene clip that is playing, keeping 
 - **GIVEN** scene 1's clip is playing
 - **WHEN** the User presses `Play scene 2 clip`
 - **THEN** scene 2's clip plays and scene 1's clip is paused at its position
+
+### Requirement: Every scene card shows its scene number
+
+Every scene card SHALL show `Scene {index}` in its status line, in every state:
+- before its image;
+- with its image;
+- with its clip player;
+- expanded.
+
+The number SHALL be the scene's 1-based `index`, the one the scene progress summary and every scene action name. It SHALL NOT depend on the thumbnail, which a stored clip replaces.
+
+#### Scenario: A scene with a clip
+- **GIVEN** scene 4 has a stored clip, so its card shows the clip player instead of the thumbnail
+- **THEN** its card shows "Scene 4"
+
+#### Scenario: An expanded scene
+- **WHEN** the User expands scene 4's details
+- **THEN** its card still shows "Scene 4"

@@ -17,6 +17,7 @@
 
 - [x] 3.1 Failing component tests: player and buttons shown exactly when `result.videoUrl` is present, collapsed and expanded, with one video per scene; `preload="none"` and the image as poster; Play, Pause, resume, Stop back to 0; button states; one clip at a time; error message; a new `videoUrl` reloads from the start; a live update adds the player without a reload
 - [x] 3.2 Add `SceneClipPlayer` and use it in `SceneRow`; remove the old details `<video controls>`; styles in `app.css` for both themes and 375px width
+- [x] 3.3 Show `Scene {index}` in every card's status line, so the number stays when the clip player replaces the thumbnail and when the card is expanded. Write the failing component test first, for a card before its image, with its image, with its clip, and expanded.
 
 ## 4. Review and update existing unit tests (MANDATORY)
 
