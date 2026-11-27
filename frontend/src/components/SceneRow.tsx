@@ -13,8 +13,12 @@ import { SceneClipPlayer } from "./SceneClipPlayer";
 import { VideoRequestStatus } from "./VideoRequestStatus";
 import { StatusPill } from "./StatusPill";
 
-/** rebuild-scene (JOS-235) — rebuilds a scene's image and clip; only the instructions the User changed are passed. Rejects with the refusal reason. */
-export type SceneRebuildHandler = (sceneId: string, instructions: { imageInstruction?: string; videoInstruction?: string }) => Promise<unknown>;
+/** rebuild-scene (JOS-235) — rebuilds a scene's image and clip; only the instructions the User changed are passed. Rejects with the refusal reason.
+ * rebuild-scene-clip-only — `scope: "clip"` keeps the image and rebuilds only the clip. */
+export type SceneRebuildHandler = (
+  sceneId: string,
+  request: { imageInstruction?: string; videoInstruction?: string; scope?: "clip" },
+) => Promise<unknown>;
 
 interface Props {
   scene: SceneEventPayload;
@@ -67,6 +71,7 @@ export function SceneRow({ scene, paused, onRetry, onCorrect, onSetPause, onRebu
   const storedVideoInstruction = scene.videoInstruction ?? "";
   const [imageDraft, setImageDraft] = useState(storedImageInstruction);
   const [videoDraft, setVideoDraft] = useState(storedVideoInstruction);
+  const [clipOnly, setClipOnly] = useState(false);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- resets the draft when the scene or its affected stage changes
@@ -101,13 +106,20 @@ export function SceneRow({ scene, paused, onRetry, onCorrect, onSetPause, onRebu
   function openRebuildForm() {
     setImageDraft(storedImageInstruction);
     setVideoDraft(storedVideoInstruction);
+    setClipOnly(false);
     setRefusal(null);
     setRebuildOpen(true);
   }
 
+  // rebuild-scene-clip-only, design Decision 5 — only a complete scene with a clip can keep its image.
+  const canRebuildClipOnly = scene.state === "chunk-complete" && Boolean(scene.result?.videoUrl);
+  const rebuildingClipOnly = clipOnly && canRebuildClipOnly;
+
   // Only what the User changed is sent; a changed instruction must not be empty (the backend refuses it too).
+  // With Clip only the IMAGE field is hidden, so its edit is kept in the draft but not sent.
   const rebuildChanges = {
-    ...(imageDraft.trim() !== storedImageInstruction.trim() ? { imageInstruction: imageDraft.trim() } : {}),
+    ...(rebuildingClipOnly ? { scope: "clip" as const } : {}),
+    ...(!rebuildingClipOnly && imageDraft.trim() !== storedImageInstruction.trim() ? { imageInstruction: imageDraft.trim() } : {}),
     ...(videoDraft.trim() !== storedVideoInstruction.trim() ? { videoInstruction: videoDraft.trim() } : {}),
   };
   const rebuildHasEmptyChange = Object.values(rebuildChanges).some((value) => value === "");
@@ -284,17 +296,41 @@ export function SceneRow({ scene, paused, onRetry, onCorrect, onSetPause, onRebu
                   });
                 }}
               >
-                <p>
-                  The image and the clip are generated again by the providers, which costs one request each. The rest of the session is kept. When
-                  you have checked the scenes, rebuild the final video.
-                </p>
-                <label htmlFor={`rebuild-image-${scene.sceneId}`}>IMAGE instruction for scene {scene.index}</label>
-                <textarea id={`rebuild-image-${scene.sceneId}`} value={imageDraft} onChange={(e) => setImageDraft(e.target.value)} />
+                {canRebuildClipOnly && (
+                  <fieldset className="segmented">
+                    <legend>What to rebuild for scene {scene.index}</legend>
+                    <label>
+                      <input type="radio" name={`rebuild-scope-${scene.sceneId}`} checked={!clipOnly} onChange={() => setClipOnly(false)} />
+                      Image and clip
+                    </label>
+                    <label>
+                      <input type="radio" name={`rebuild-scope-${scene.sceneId}`} checked={clipOnly} onChange={() => setClipOnly(true)} />
+                      Clip only, keep the current image
+                    </label>
+                  </fieldset>
+                )}
+                {rebuildingClipOnly ? (
+                  <p>
+                    Only the clip is generated again from the current image by the video provider, which costs one request. The rest of the session
+                    is kept. When you have checked the scenes, rebuild the final video.
+                  </p>
+                ) : (
+                  <p>
+                    The image and the clip are generated again by the providers, which costs one request each. The rest of the session is kept. When
+                    you have checked the scenes, rebuild the final video.
+                  </p>
+                )}
+                {!rebuildingClipOnly && (
+                  <>
+                    <label htmlFor={`rebuild-image-${scene.sceneId}`}>IMAGE instruction for scene {scene.index}</label>
+                    <textarea id={`rebuild-image-${scene.sceneId}`} value={imageDraft} onChange={(e) => setImageDraft(e.target.value)} />
+                  </>
+                )}
                 <label htmlFor={`rebuild-video-${scene.sceneId}`}>VIDEO instruction for scene {scene.index}</label>
                 <textarea id={`rebuild-video-${scene.sceneId}`} value={videoDraft} onChange={(e) => setVideoDraft(e.target.value)} />
                 <div className="rebuild-actions">
                   <button type="submit" className="primary" disabled={pending || rebuildHasEmptyChange}>
-                    Rebuild image and clip
+                    {rebuildingClipOnly ? "Rebuild clip" : "Rebuild image and clip"}
                   </button>
                   <button type="button" disabled={pending} onClick={() => setRebuildOpen(false)}>
                     Cancel

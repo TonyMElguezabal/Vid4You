@@ -18,6 +18,10 @@
 # file (same
 # command) whenever a route changes, rather than hand-editing it out of sync.
 #
+# rebuild-scene-clip-only - 2026-11-27: no new path. `POST /sessions/{sessionId}/scenes/{sceneId}/rebuild` gains the
+# optional `scope` (`image-and-clip`, the default, or `clip`), checked against `app.swagger()`. `scope: clip` keeps the
+# image and regenerates only the clip; with `imageInstruction` it answers 400.
+#
 # redo-scene-narration (JOS-282) - 2026-11-26: new paths, generated from the running app (`app.swagger()`) and merged
 # into this file's order: `GET /sessions/{sessionId}/narration-takes/quote?firstSceneId&lastSceneId` (200 `{ text,
 # characters, estimatedCost, pauseEditsReset, limit }`, no side effects; 404 `unknown-scene`, 422 `invalid-range` or
@@ -2302,7 +2306,7 @@ paths:
                 additionalProperties: false
   /sessions/{sessionId}/scenes/{sceneId}/rebuild:
     post:
-      description: "rebuild-scene (JOS-235): regenerates a generated scene's image and then its clip, optionally with edited instructions."
+      description: "rebuild-scene (JOS-235): regenerates a generated scene's image and then its clip, optionally with edited instructions. rebuild-scene-clip-only: with `scope: clip`, keeps the stored image and regenerates only the clip of a complete scene; `imageInstruction` with `scope: clip` answers 400, and a scene that is not `chunk-complete` with its image and clip stored answers 409 `scene-not-ready`."
       requestBody:
         required: true
         content:
@@ -2318,6 +2322,13 @@ paths:
                   type: string
                   minLength: 1
                   description: The corrected VIDEO instruction; omitted keeps the stored one.
+                scope:
+                  type: string
+                  enum:
+                    - image-and-clip
+                    - clip
+                  default: image-and-clip
+                  description: "`image-and-clip` (the default) generates the image and then the clip again. `clip` keeps the stored image and generates only the clip; it needs a complete scene."
               additionalProperties: false
       parameters:
         - schema:

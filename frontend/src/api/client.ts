@@ -76,11 +76,11 @@ export function rebuildFinalVideo(sessionId: string): Promise<{ ok: true; held: 
   return fetch(`${API_BASE}/sessions/${sessionId}/final-video/rebuild`, { method: "POST" }).then(asJson<{ ok: true; held: boolean }>);
 }
 
-/** rebuild-scene (JOS-235) — regenerates a generated scene's image and clip; omitted instructions keep the stored ones. Rejects with the refusal reason. */
+/** rebuild-scene (JOS-235) — regenerates a generated scene's image and clip; omitted instructions keep the stored ones. `scope: "clip"` keeps the image (rebuild-scene-clip-only). Rejects with the refusal reason. */
 export function rebuildScene(
   sessionId: string,
   sceneId: string,
-  instructions: { imageInstruction?: string; videoInstruction?: string },
+  instructions: { imageInstruction?: string; videoInstruction?: string; scope?: "clip" },
 ): Promise<{ ok: true; held: boolean }> {
   return fetch(`${API_BASE}/sessions/${sessionId}/scenes/${sceneId}/rebuild`, {
     method: "POST",

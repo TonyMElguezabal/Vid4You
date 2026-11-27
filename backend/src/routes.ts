@@ -135,7 +135,20 @@ const providerCallbackParamsSchema = z.object({ requestId: z.string().uuid() });
 // and so changes nothing, the same guarantee `.strict()` would give, without breaking that shared convention.
 // rebuild-scene (JOS-235) — an omitted instruction keeps the stored one; a present one must not be empty.
 const instructionSchema = z.string().transform((value) => value.trim()).pipe(z.string().min(1));
-const rebuildSceneBodySchema = z.object({ imageInstruction: instructionSchema.optional(), videoInstruction: instructionSchema.optional() });
+// rebuild-scene-clip-only, design Decision 1 — `scope: "clip"` keeps the image, so an IMAGE edit with it is refused, not lost.
+const rebuildSceneBodySchema = z
+  .object({
+    imageInstruction: instructionSchema.optional(),
+    videoInstruction: instructionSchema.optional(),
+    scope: z
+      .enum(["image-and-clip", "clip"])
+      .default("image-and-clip")
+      .describe("`image-and-clip` (the default) generates the image and then the clip again. `clip` keeps the stored image and generates only the clip; it needs a complete scene."),
+  })
+  .refine((body) => !(body.scope === "clip" && body.imageInstruction !== undefined), {
+    message: "imageInstruction cannot be given with scope clip",
+    path: ["imageInstruction"],
+  });
 const correctBodySchema = z.object({ instruction: z.string().transform((value) => value.trim()).pipe(z.string().min(1)) });
 
 // see-provider-and-attempts (JOS-166) Decision 4 — the closed list of what a stage diagnostic may carry. `.strict()` makes
