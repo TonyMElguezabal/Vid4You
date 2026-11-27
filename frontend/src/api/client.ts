@@ -1,8 +1,10 @@
-import type { AdapterTypeInfo, AppSettings, AppUpdate, AppVersion, ConnectionTestResult, EstimatedCostReport, FailedStageRow, FrontendErrorKind, FrontendErrorReport, FailuresReport, PipelineTimeReport, ProfileProblem, ProviderChangesReport, ProfileView, ProviderStage, ProviderUsageReport, ProviderView, ReportPeriod, SceneEventPayload, SessionScenesReport, SessionSnapshot, SessionsReport, TelemetryChoices, TelemetryConsent } from "../types";
+import type { AdapterTypeInfo, AppSettings, AppUpdate, AppVersion, ConnectionTestResult, EstimatedCostReport, FailedStageRow, FrontendErrorKind, FrontendErrorReport, FailuresReport, PipelineTimeReport, ProfileProblem, ProviderChangesReport, ProfileView, ProviderStage, ProviderUsageReport, ProviderView, ReportPeriod, SceneEventPayload, SessionScenesReport, SessionSnapshot, SessionsReport, TakeQuote, TelemetryChoices, TelemetryConsent } from "../types";
 
 // Points at the `define-backend-stack` harness (JOS-179) directly — no
 // third mock server (Decision 7 / task 4.2). Overridable for other harness
 // ports via an env var, but defaults to the skeleton's documented port.
+import type { NarrationTakeHandlers } from "../components/NarrationTakePanel";
+
 export const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? "http://127.0.0.1:3100";
 
 async function asJson<T>(response: Response): Promise<T> {
@@ -85,6 +87,39 @@ export function rebuildScene(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(instructions),
   }).then(asJson<{ ok: true; held: boolean }>);
+}
+
+/** redo-scene-narration (JOS-282) — what reading scenes first to last again would send and cost. Rejects with the refusal reason. */
+export function quoteNarrationTake(sessionId: string, firstSceneId: string, lastSceneId: string): Promise<TakeQuote> {
+  const query = new URLSearchParams({ firstSceneId, lastSceneId });
+  return fetch(`${API_BASE}/sessions/${sessionId}/narration-takes/quote?${query.toString()}`).then(asJson<TakeQuote>);
+}
+
+/** Reads scenes first to last again, once, from the session's voice provider. Rejects with the refusal reason. */
+export function createNarrationTake(sessionId: string, firstSceneId: string, lastSceneId: string): Promise<{ ok: true; takeId: string }> {
+  return fetch(`${API_BASE}/sessions/${sessionId}/narration-takes`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ firstSceneId, lastSceneId }),
+  }).then(asJson<{ ok: true; takeId: string }>);
+}
+
+export function keepNarrationTake(sessionId: string, takeId: string): Promise<{ ok: true }> {
+  return fetch(`${API_BASE}/sessions/${sessionId}/narration-takes/${takeId}/keep`, { method: "POST" }).then(asJson<{ ok: true }>);
+}
+
+export function discardNarrationTake(sessionId: string, takeId: string): Promise<{ ok: true }> {
+  return fetch(`${API_BASE}/sessions/${sessionId}/narration-takes/${takeId}/discard`, { method: "POST" }).then(asJson<{ ok: true }>);
+}
+
+/** The four take commands bound to one session, for the session page (redo-scene-narration, JOS-282). */
+export function narrationTakeHandlersFor(sessionId: string): NarrationTakeHandlers {
+  return {
+    quote: (first, last) => quoteNarrationTake(sessionId, first, last),
+    create: (first, last) => createNarrationTake(sessionId, first, last),
+    keep: (takeId) => keepNarrationTake(sessionId, takeId),
+    discard: (takeId) => discardNarrationTake(sessionId, takeId),
+  };
 }
 
 export function retryScene(sessionId: string, sceneId: string): Promise<{ ok: boolean }> {

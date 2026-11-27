@@ -18,6 +18,16 @@
 # file (same
 # command) whenever a route changes, rather than hand-editing it out of sync.
 #
+# redo-scene-narration (JOS-282) - 2026-11-26: new paths, generated from the running app (`app.swagger()`) and merged
+# into this file's order: `GET /sessions/{sessionId}/narration-takes/quote?firstSceneId&lastSceneId` (200 `{ text,
+# characters, estimatedCost, pauseEditsReset, limit }`, no side effects; 404 `unknown-scene`, 422 `invalid-range` or
+# `too-long` with `limit`, 409 `narration-not-located`), `POST /sessions/{sessionId}/narration-takes` (202 `{ ok, takeId }`;
+# the quote's refusals plus 409 `take-in-progress` and `assembly-in-progress`), `GET .../narration-takes/{takeId}/preview`
+# (`audio/mp4` inline, 200/206/416 like the scene clip, 404), and `POST .../narration-takes/{takeId}/keep` and `/discard`
+# (200 `{ ok }`; 404 `unknown-take`; 409 `take-not-open`, `take-not-ready`, and for keep `assembly-in-progress`). The
+# session read gains `session.narration` (`version`, and the open `take`), and each scene `narrationRedone` and
+# `narrationRedoable`. `finalVideo.staleScenes` is also true after a kept take. The quote is the only answer with script text.
+#
 # watch-scene-clips (JOS-281) - 2026-11-26: new path `GET /sessions/{sessionId}/scenes/{sceneId}/clip`, generated
 # from the running app (`app.swagger()`): the stored clip inline, 200 or 206 (`video/mp4`, binary, via a route-level
 # `swaggerTransform` like the final-video download), 404, 416 for a range past the end (no body; the generator still
@@ -522,7 +532,7 @@ paths:
                               built with, so a rebuild would change it.
                           staleScenes:
                             type: boolean
-                            description: "rebuild-scene (JOS-235): True when a scene was rebuilt after this version was built, so a rebuild would change it."
+                            description: "True when a scene was rebuilt or a narration take was kept after this version was built, so a rebuild would change it (rebuild-scene, JOS-235; redo-scene-narration, JOS-282)."
                           rebuildFailure:
                             type: object
                             properties:
@@ -541,6 +551,51 @@ paths:
                         additionalProperties: false
                         description: "adjust-scene-pause (JOS-190): present once the session has a final
                           video. Derived on every read, never stored."
+                      narration:
+                        type: object
+                        properties:
+                          version:
+                            type: integer
+                            minimum: 1
+                            description: 1 for the original voice-over; one more for each kept narration
+                              take.
+                          take:
+                            type: object
+                            properties:
+                              takeId:
+                                type: string
+                              state:
+                                type: string
+                                enum:
+                                  - generating
+                                  - ready
+                                  - failed
+                              firstSceneIndex:
+                                type: integer
+                              lastSceneIndex:
+                                type: integer
+                              previewUrl:
+                                type: string
+                                description: "Present while the take waits for review: its preview, inline, with
+                                  byte ranges."
+                              failure:
+                                type: string
+                                description: "Present when the take failed: a cause written for a person, never
+                                  credentials."
+                            required:
+                              - takeId
+                              - state
+                              - firstSceneIndex
+                              - lastSceneIndex
+                            additionalProperties: false
+                            description: The latest take while it is generating, waiting for review, or
+                              failed and not yet discarded.
+                        required:
+                          - version
+                        additionalProperties: false
+                        description: "redo-scene-narration (JOS-282): present once the narration exists.
+                          Derived on every read; never carries the script's
+                          text."
                     required:
                       - type
                       - sessionId
@@ -857,6 +912,15 @@ paths:
                             video and this scene's pause can be derived. Derived
                             on every read; the stored interval is never
                             changed."
+                        narrationRedone:
+                          type: boolean
+                          description: "redo-scene-narration (JOS-282): true when a kept narration take
+                            covers this scene; absent otherwise."
+                        narrationRedoable:
+                          type: boolean
+                          description: "redo-scene-narration (JOS-282): true when this scene's narration
+                            is located in the current timestamps, so it can be
+                            read again; absent otherwise."
                         updatedAt:
                           type: string
                       required:
@@ -1146,7 +1210,7 @@ paths:
                               built with, so a rebuild would change it.
                           staleScenes:
                             type: boolean
-                            description: "rebuild-scene (JOS-235): True when a scene was rebuilt after this version was built, so a rebuild would change it."
+                            description: "True when a scene was rebuilt or a narration take was kept after this version was built, so a rebuild would change it (rebuild-scene, JOS-235; redo-scene-narration, JOS-282)."
                           rebuildFailure:
                             type: object
                             properties:
@@ -1165,6 +1229,51 @@ paths:
                         additionalProperties: false
                         description: "adjust-scene-pause (JOS-190): present once the session has a final
                           video. Derived on every read, never stored."
+                      narration:
+                        type: object
+                        properties:
+                          version:
+                            type: integer
+                            minimum: 1
+                            description: 1 for the original voice-over; one more for each kept narration
+                              take.
+                          take:
+                            type: object
+                            properties:
+                              takeId:
+                                type: string
+                              state:
+                                type: string
+                                enum:
+                                  - generating
+                                  - ready
+                                  - failed
+                              firstSceneIndex:
+                                type: integer
+                              lastSceneIndex:
+                                type: integer
+                              previewUrl:
+                                type: string
+                                description: "Present while the take waits for review: its preview, inline, with
+                                  byte ranges."
+                              failure:
+                                type: string
+                                description: "Present when the take failed: a cause written for a person, never
+                                  credentials."
+                            required:
+                              - takeId
+                              - state
+                              - firstSceneIndex
+                              - lastSceneIndex
+                            additionalProperties: false
+                            description: The latest take while it is generating, waiting for review, or
+                              failed and not yet discarded.
+                        required:
+                          - version
+                        additionalProperties: false
+                        description: "redo-scene-narration (JOS-282): present once the narration exists.
+                          Derived on every read; never carries the script's
+                          text."
                     required:
                       - type
                       - sessionId
@@ -1481,6 +1590,15 @@ paths:
                             video and this scene's pause can be derived. Derived
                             on every read; the stored interval is never
                             changed."
+                        narrationRedone:
+                          type: boolean
+                          description: "redo-scene-narration (JOS-282): true when a kept narration take
+                            covers this scene; absent otherwise."
+                        narrationRedoable:
+                          type: boolean
+                          description: "redo-scene-narration (JOS-282): true when this scene's narration
+                            is located in the current timestamps, so it can be
+                            read again; absent otherwise."
                         updatedAt:
                           type: string
                       required:
@@ -2117,6 +2235,15 @@ paths:
                       scene. Present only once the session has a final video and
                       this scene's pause can be derived. Derived on every read;
                       the stored interval is never changed."
+                  narrationRedone:
+                    type: boolean
+                    description: "redo-scene-narration (JOS-282): true when a kept narration take
+                      covers this scene; absent otherwise."
+                  narrationRedoable:
+                    type: boolean
+                    description: "redo-scene-narration (JOS-282): true when this scene's narration
+                      is located in the current timestamps, so it can be read
+                      again; absent otherwise."
                   updatedAt:
                     type: string
                 required:
@@ -2612,6 +2739,411 @@ paths:
               schema:
                 description: "The range starts at or past the end of the clip; Content-Range:
                   bytes */size"
+  /sessions/{sessionId}/narration-takes/quote:
+    get:
+      description: "redo-scene-narration (JOS-282): what reading scenes firstSceneId
+        to lastSceneId again would send and cost. No side effects, and no
+        provider call. Refusals: 404 unknown-scene; 422 invalid-range (last
+        before first) or too-long (more than `limit` characters); 409
+        narration-not-located."
+      parameters:
+        - schema:
+            type: string
+            format: uuid
+          in: query
+          name: firstSceneId
+          required: true
+        - schema:
+            type: string
+            format: uuid
+          in: query
+          name: lastSceneId
+          required: true
+        - schema:
+            type: string
+            pattern: ^[0-9A-HJKMNP-TV-Z]{26}$
+          in: path
+          name: sessionId
+          required: true
+      responses:
+        "200":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  text:
+                    type: string
+                    description: The script's characters that would be read again, exactly as
+                      stored. The only answer that carries script text.
+                  characters:
+                    type: integer
+                  estimatedCost:
+                    type: object
+                    properties:
+                      amount:
+                        type: number
+                      currency:
+                        type: string
+                    required:
+                      - amount
+                      - currency
+                    additionalProperties: false
+                    nullable: true
+                    description: Characters times the bound voice provider's price; null when it has
+                      no price.
+                  pauseEditsReset:
+                    type: array
+                    items:
+                      type: integer
+                    description: Indexes of the selected scenes whose pause edits keeping the take
+                      would remove.
+                  limit:
+                    type: integer
+                    description: The most characters one take may read again.
+                required:
+                  - text
+                  - characters
+                  - estimatedCost
+                  - pauseEditsReset
+                  - limit
+                additionalProperties: false
+        "404":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  reason:
+                    type: string
+                  limit:
+                    type: integer
+                required:
+                  - ok
+                  - reason
+                additionalProperties: false
+        "409":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  reason:
+                    type: string
+                  limit:
+                    type: integer
+                required:
+                  - ok
+                  - reason
+                additionalProperties: false
+        "422":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  reason:
+                    type: string
+                  limit:
+                    type: integer
+                required:
+                  - ok
+                  - reason
+                additionalProperties: false
+  /sessions/{sessionId}/narration-takes:
+    post:
+      description: "redo-scene-narration (JOS-282): records a take and sends the
+        quoted text once to the session's voice provider; 202, the work happens
+        after the answer. Refusals as the quote, plus 409 take-in-progress and
+        assembly-in-progress."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                firstSceneId:
+                  type: string
+                  format: uuid
+                lastSceneId:
+                  type: string
+                  format: uuid
+              required:
+                - firstSceneId
+                - lastSceneId
+              additionalProperties: false
+      parameters:
+        - schema:
+            type: string
+            pattern: ^[0-9A-HJKMNP-TV-Z]{26}$
+          in: path
+          name: sessionId
+          required: true
+      responses:
+        "202":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  takeId:
+                    type: string
+                required:
+                  - ok
+                  - takeId
+                additionalProperties: false
+        "404":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  reason:
+                    type: string
+                  limit:
+                    type: integer
+                required:
+                  - ok
+                  - reason
+                additionalProperties: false
+        "409":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  reason:
+                    type: string
+                  limit:
+                    type: integer
+                required:
+                  - ok
+                  - reason
+                additionalProperties: false
+        "422":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  reason:
+                    type: string
+                  limit:
+                    type: integer
+                required:
+                  - ok
+                  - reason
+                additionalProperties: false
+  /sessions/{sessionId}/narration-takes/{takeId}/preview:
+    get:
+      description: "redo-scene-narration (JOS-282): the narration from 3 s before the
+        take's section to 3 s after it, while the take waits for review. Byte
+        ranges as the scene clip."
+      parameters:
+        - schema:
+            type: string
+            pattern: ^[0-9A-HJKMNP-TV-Z]{26}$
+          in: path
+          name: sessionId
+          required: true
+        - schema:
+            type: string
+            pattern: ^[0-9A-HJKMNP-TV-Z]{26}$
+          in: path
+          name: takeId
+          required: true
+      responses:
+        "200":
+          description: "The take's preview (AAC in MP4), inline, with Accept-Ranges: bytes"
+          content:
+            audio/mp4:
+              schema:
+                type: string
+                format: binary
+        "206":
+          description: The requested byte range, with Content-Range
+          content:
+            audio/mp4:
+              schema:
+                type: string
+                format: binary
+        "404":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  reason:
+                    type: string
+                required:
+                  - ok
+                  - reason
+                additionalProperties: false
+        "416":
+          description: "The range starts at or past the end of the file; Content-Range:
+            bytes */size"
+          content:
+            application/json:
+              schema:
+                description: "The range starts at or past the end of the file; Content-Range:
+                  bytes */size"
+  /sessions/{sessionId}/narration-takes/{takeId}/keep:
+    post:
+      description: "redo-scene-narration (JOS-282): makes a take waiting for review
+        the current narration, removes its scenes' pause edits, and rebuilds the
+        final video. Refusals: 404 unknown-take; 409 take-not-open,
+        take-not-ready, assembly-in-progress."
+      parameters:
+        - schema:
+            type: string
+            pattern: ^[0-9A-HJKMNP-TV-Z]{26}$
+          in: path
+          name: sessionId
+          required: true
+        - schema:
+            type: string
+            pattern: ^[0-9A-HJKMNP-TV-Z]{26}$
+          in: path
+          name: takeId
+          required: true
+      responses:
+        "200":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                required:
+                  - ok
+                additionalProperties: false
+        "404":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  reason:
+                    type: string
+                  limit:
+                    type: integer
+                required:
+                  - ok
+                  - reason
+                additionalProperties: false
+        "409":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  reason:
+                    type: string
+                  limit:
+                    type: integer
+                required:
+                  - ok
+                  - reason
+                additionalProperties: false
+  /sessions/{sessionId}/narration-takes/{takeId}/discard:
+    post:
+      description: "redo-scene-narration (JOS-282): discards a take waiting for review
+        or failed; nothing else changes. Refusals: 404 unknown-take; 409
+        take-not-open, take-not-ready."
+      parameters:
+        - schema:
+            type: string
+            pattern: ^[0-9A-HJKMNP-TV-Z]{26}$
+          in: path
+          name: sessionId
+          required: true
+        - schema:
+            type: string
+            pattern: ^[0-9A-HJKMNP-TV-Z]{26}$
+          in: path
+          name: takeId
+          required: true
+      responses:
+        "200":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                required:
+                  - ok
+                additionalProperties: false
+        "404":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  reason:
+                    type: string
+                  limit:
+                    type: integer
+                required:
+                  - ok
+                  - reason
+                additionalProperties: false
+        "409":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  reason:
+                    type: string
+                  limit:
+                    type: integer
+                required:
+                  - ok
+                  - reason
+                additionalProperties: false
   /sessions/{sessionId}/download/final-video:
     get:
       description: 'Content-Disposition names the file after the project title:
@@ -4447,7 +4979,6 @@ paths:
                   - ok
                   - reason
                 additionalProperties: false
-
   /admin/reports/provider-usage:
     get:
       parameters:
@@ -4579,7 +5110,6 @@ paths:
                   - ok
                   - reason
                 additionalProperties: false
-
   /admin/reports/estimated-cost:
     get:
       parameters:
@@ -5237,7 +5767,6 @@ paths:
                   - error
                   - message
                 additionalProperties: true
-
   /admin/reports/provider-changes:
     get:
       parameters:

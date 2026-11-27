@@ -65,6 +65,17 @@ describe("The ElevenLabs request", () => {
     });
   });
 
+  it("sends a narration take's surrounding text as context, and no context fields without it (redo-scene-narration, JOS-282)", async () => {
+    const { fetchFn, calls } = fakeFetch(successResponse());
+
+    await providerWith(fetchFn).synthesize({ ...REQUEST, text: "Scene 2.", previousText: "Scene 1. ", nextText: " Scene 3." });
+    await providerWith(fetchFn).synthesize(REQUEST);
+
+    expect(JSON.parse(calls[0]?.init.body as string)).toMatchObject({ text: "Scene 2.", previous_text: "Scene 1. ", next_text: " Scene 3." });
+    expect(JSON.parse(calls[1]?.init.body as string)).not.toHaveProperty("previous_text");
+    expect(JSON.parse(calls[1]?.init.body as string)).not.toHaveProperty("next_text");
+  });
+
   it("sends the script exactly as given, untrimmed and unchanged", async () => {
     const { fetchFn, calls } = fakeFetch(successResponse());
     const script = "  Line one.\n\nLine two,  with   spaces.  ";
@@ -233,6 +244,16 @@ describe("The stub provider", () => {
     expect(result.audio.byteLength).toBeGreaterThan(0);
     expect(result.nativeTimestamps).toBeDefined();
     expect(result.providerRequestId).toBeDefined();
+  });
+
+  it("answers a narration take (a request with context) with timestamps over the first 75% of its audio", async () => {
+    const result = await createStubVoiceProvider("success", { audioSeconds: 2 }).synthesize({ ...REQUEST, text: "Scene 1.", previousText: "", nextText: "" });
+
+    expect(result.kind).toBe("success");
+    if (result.kind !== "success") return;
+    const timestamps = result.nativeTimestamps as { characters: string[]; character_end_times_seconds: number[] };
+    expect(timestamps.characters.join("")).toBe("Scene 1.");
+    expect(timestamps.character_end_times_seconds.at(-1)).toBeCloseTo(1.5, 9);
   });
 
   it("succeeds without timestamps", async () => {

@@ -67,6 +67,8 @@ export interface SessionEventPayload {
   finalVideoUrl?: string;
   /** adjust-scene-pause (JOS-190) — present once the session has a final video; the page never derives the version or "pending" itself. */
   finalVideo?: FinalVideoStatus;
+  /** redo-scene-narration (JOS-282) — present once the narration exists: its version and the open take. */
+  narration?: NarrationView;
   /** ISO-8601 instant the session was registered (documented in `docs/api-spec.yml`, always present). */
   createdAt: string;
   updatedAt: string;
@@ -146,6 +148,10 @@ export interface SceneEventPayload {
   held?: boolean;
   /** adjust-scene-pause (JOS-190) — present only once the session has a final video and this scene's pause can be derived. */
   pause?: ScenePauseView;
+  /** redo-scene-narration (JOS-282) — true when a kept narration take covers this scene. */
+  narrationRedone?: boolean;
+  /** True when this scene's narration can be read again. */
+  narrationRedoable?: boolean;
   updatedAt: string;
 }
 
@@ -421,4 +427,26 @@ export interface EstimatedCostReport {
   rows: EstimatedCostRow[];
   totals: CurrencyTotal[];
   totalsExcludeUnpriced: boolean;
+}
+
+/** redo-scene-narration (JOS-282), design Decision 10 — the session's narration version and its open take. */
+export interface NarrationView {
+  version: number;
+  take?: {
+    takeId: string;
+    state: "generating" | "ready" | "failed";
+    firstSceneIndex: number;
+    lastSceneIndex: number;
+    previewUrl?: string;
+    failure?: string;
+  };
+}
+
+/** What reading a scene range again would send and cost (`GET …/narration-takes/quote`). */
+export interface TakeQuote {
+  text: string;
+  characters: number;
+  estimatedCost: { amount: number; currency: string } | null;
+  pauseEditsReset: number[];
+  limit: number;
 }

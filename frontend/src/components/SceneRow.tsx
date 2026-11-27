@@ -7,6 +7,7 @@ import { formatStageDiagnostic } from "../stageDiagnostics";
 import { sceneRecoveryRefusalSentence } from "../sceneRecoveryRefusals";
 import { AFFECTED_STAGE_LABEL, DURATION_WARNING_TEXT, SCENE_STATE_LABEL, SPEED_WARNING_TEXT } from "../statusLabels";
 import { Icon } from "./Icon";
+import { NarrationRedoForm, type NarrationRedoOffer } from "./NarrationRedoForm";
 import { PauseDial } from "./PauseDial";
 import { SceneClipPlayer } from "./SceneClipPlayer";
 import { VideoRequestStatus } from "./VideoRequestStatus";
@@ -30,6 +31,8 @@ interface Props {
   onRebuild?: SceneRebuildHandler;
   /** The session's state: a scene cannot be rebuilt while the final video is being assembled. */
   sessionState?: SessionState;
+  /** redo-scene-narration (JOS-282) — present only when this scene's narration may be read again now. */
+  narrationRedo?: NarrationRedoOffer;
 }
 
 /**
@@ -50,7 +53,7 @@ interface Props {
  * pill, and the unchanged details toggle. Expanded, the card spans the row and shows the named image in place of
  * the thumbnail, so a scene never has two images.
  */
-export function SceneRow({ scene, paused, onRetry, onCorrect, onSetPause, onRebuild, sessionState }: Props) {
+export function SceneRow({ scene, paused, onRetry, onCorrect, onSetPause, onRebuild, sessionState, narrationRedo }: Props) {
   const [expanded, setExpanded] = useState(false);
   const correctionStage = scene.affectedStage === "video" ? "video" : "image";
   const currentInstruction = correctionStage === "video"
@@ -133,6 +136,7 @@ export function SceneRow({ scene, paused, onRetry, onCorrect, onSetPause, onRebu
       <div className="scene-body">
         <div className="scene-line">
           <StatusPill statusClass={statusClass} label={SCENE_STATE_LABEL[scene.state]} />
+          {scene.narrationRedone && <span className="scene-badge">Narration redone</span>}
           {scene.requestedDurationSeconds !== undefined && <span className="scene-duration">{scene.requestedDurationSeconds} s</span>}
         </div>
         {scene.held && <span className="scene-held">Waiting for continue</span>}
@@ -297,6 +301,7 @@ export function SceneRow({ scene, paused, onRetry, onCorrect, onSetPause, onRebu
                 </div>
               </form>
             )}
+            {narrationRedo && <NarrationRedoForm key={narrationRedo.throughScenes.map((entry) => entry.sceneId).join()} offer={narrationRedo} />}
             {/* retry-or-correct-image (JOS-157), design Decision 7 — a 404/409 refusal shown as its sentence;
              * the scene's new state, on a success, arrives through the live update, not from here. */}
             {refusal && <p role="status">{refusal}</p>}

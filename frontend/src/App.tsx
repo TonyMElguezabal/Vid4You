@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { StartProjectForm, type StartProjectValues, type SupportedLanguage } from "./components/StartProjectForm";
 import { SessionPage } from "./components/SessionPage";
 import { TopBar } from "./components/TopBar";
@@ -19,6 +19,7 @@ import {
   pauseSession,
   rebuildFinalVideo,
   rebuildScene,
+  narrationTakeHandlersFor,
   retryAssembly,
   retryDecomposition,
   retryScene,
@@ -62,6 +63,8 @@ export default function App() {
 
 function RegularApp({ appVersion }: { appVersion: AppVersion | undefined }) {
   const [sessionId, setSessionId] = useState<string | undefined>(sessionIdFromUrl);
+  // redo-scene-narration (JOS-282) — stable across live updates, so an open Redo narration form does not quote again on each one.
+  const narrationTakes = useMemo(() => (sessionId ? narrationTakeHandlersFor(sessionId) : undefined), [sessionId]);
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | undefined>(undefined);
   const [languages, setLanguages] = useState<SupportedLanguage[]>([]);
@@ -168,6 +171,7 @@ function RegularApp({ appVersion }: { appVersion: AppVersion | undefined }) {
           onSetPause={(sceneId, seconds) => setScenePause(sessionId, sceneId, seconds)}
           onRebuildFinalVideo={() => rebuildFinalVideo(sessionId)}
           onRebuildScene={(sceneId, instructions) => rebuildScene(sessionId, sceneId, instructions)}
+          narrationTakes={narrationTakes}
           onRetryPhase={(phase) => {
             if (phase === "voice-over") return retryVoiceOver(sessionId);
             if (phase === "decomposition") return retryDecomposition(sessionId);

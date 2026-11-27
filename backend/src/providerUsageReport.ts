@@ -67,6 +67,7 @@ type AttemptFilter = (sentAtColumn: string, runIdColumn: string) => { sql: strin
 // ponytail: reads every counted attempt of the period into memory; move the aggregation into SQL if "all time" gets slow.
 function readCountedAttempts(filter: AttemptFilter): CountedAttempt[] {
   const sessionFilter = filter("a.sent_at", "a.run_id");
+  const takeFilter = filter("t.sent_at", "t.run_id");
   const sceneFilter = filter("pr.sent_at", "s.run_id");
   const sessionRows = db
     .prepare(
@@ -77,9 +78,15 @@ function readCountedAttempts(filter: AttemptFilter): CountedAttempt[] {
        FROM stage_attempts a
        WHERE a.stage IN ('voice-over', 'timestamps', 'decomposition') AND a.provider_id IS NOT NULL AND ${NOT_NATIVE_TIMESTAMPS_SQL}
          AND a.sent_at IS NOT NULL AND a.outcome IN ('success', 'late-success', 'transient', 'not-retryable', 'timed-out')
-         AND ${sessionFilter.sql}`,
+         AND ${sessionFilter.sql}
+       UNION ALL
+       -- redo-scene-narration (JOS-282), design Decision 12 — a narration take is a voice attempt of its provider, billed by
+       -- the characters it sent; counted once its call has ended (a take still generating has no outcome yet).
+       SELECT t.run_id, 'voice-over', t.provider_id, t.provider_outcome, t.sent_at, t.finished_at, t.text_length
+       FROM narration_takes t
+       WHERE t.sent_at IS NOT NULL AND t.provider_outcome IS NOT NULL AND ${takeFilter.sql}`,
     )
-    .all(...sessionFilter.params) as unknown as { run_id: string; stage: keyof typeof SESSION_STAGES; provider_id: string; outcome: string; sent_at: string; finished_at: string | null; units: number | null }[];
+    .all(...sessionFilter.params, ...takeFilter.params) as unknown as { run_id: string; stage: keyof typeof SESSION_STAGES; provider_id: string; outcome: string; sent_at: string; finished_at: string | null; units: number | null }[];
   const sceneRows = db
     .prepare(
       `SELECT s.run_id, pr.stage, CASE pr.stage WHEN 'image' THEN s.provider ELSE s.video_provider END AS provider_id, pr.mode, pr.latency_ms,

@@ -36,6 +36,11 @@ import type {
   NarrationTimestamps,
   NarrationTimestampsInput,
   VoiceOverInput,
+  CurrentNarration,
+  NarrationTake,
+  NarrationTakeFiles,
+  NarrationTakeProviderOutcome,
+  NarrationTakeState,
 } from "./types.ts";
 import { STUB_PROVIDER_NAME } from "./types.ts";
 
@@ -221,6 +226,19 @@ export const FINAL_VIDEO_BUILDS_NO_UPDATE_TRIGGER_DDL = `CREATE TRIGGER final_vi
 export const FINAL_VIDEO_BUILDS_NO_DELETE_TRIGGER_DDL = `CREATE TRIGGER final_video_builds_no_delete BEFORE DELETE ON final_video_builds
   BEGIN
     SELECT RAISE(ABORT, 'locked: final_video_builds cannot be deleted once recorded');
+  END;`;
+
+// redo-scene-narration (JOS-282), design Decision 8 — a take is never deleted, and a decided (kept or discarded) take
+// never changes. `resetAll()` (test-only) lifts the delete trigger inside its transaction.
+export const NARRATION_TAKES_NO_UPDATE_TRIGGER_DDL = `CREATE TRIGGER narration_takes_no_update BEFORE UPDATE ON narration_takes
+  WHEN OLD.state IN ('kept', 'discarded')
+  BEGIN
+    SELECT RAISE(ABORT, 'locked: a kept or discarded narration take cannot be modified');
+  END;`;
+
+export const NARRATION_TAKES_NO_DELETE_TRIGGER_DDL = `CREATE TRIGGER narration_takes_no_delete BEFORE DELETE ON narration_takes
+  BEGIN
+    SELECT RAISE(ABORT, 'locked: narration takes cannot be deleted');
   END;`;
 
 // ---- Versioned migrations (Decision 6) — applied on top of the baseline ----
@@ -743,6 +761,42 @@ const MIGRATIONS: Array<{ version: number; description: string; up: (target: Dat
         UPDATE runs SET image_sweep_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
           WHERE EXISTS (SELECT 1 FROM scenes s WHERE s.run_id = runs.id AND s.status = 'failed');
       `);
+    },
+  },
+  {
+    version: 28,
+    description: "add narration_takes: the User's confirmed re-readings of consecutive scenes (redo-scene-narration, JOS-282)",
+    up: (target) => {
+      // Empty, no backfill: every existing session reads as narration version 1 (its original voice-over).
+      target.exec(`
+        CREATE TABLE narration_takes (
+          id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL REFERENCES runs(id),
+          number INTEGER NOT NULL CHECK (number >= 1),
+          base_version INTEGER NOT NULL CHECK (base_version >= 1),
+          first_scene_id TEXT NOT NULL REFERENCES scenes(id),
+          last_scene_id TEXT NOT NULL REFERENCES scenes(id),
+          text_length INTEGER NOT NULL CHECK (text_length >= 1),
+          provider_id TEXT NOT NULL,
+          state TEXT NOT NULL CHECK (state IN ('generating', 'ready', 'kept', 'discarded', 'failed')),
+          provider_outcome TEXT CHECK (provider_outcome IN ('success', 'transient', 'not-retryable', 'timed-out')),
+          provider_request_id TEXT,
+          failure TEXT,
+          take_audio_path TEXT,
+          take_timestamps_path TEXT,
+          narration_path TEXT,
+          narration_timestamps_path TEXT,
+          preview_path TEXT,
+          requested_at TEXT NOT NULL,
+          sent_at TEXT,
+          finished_at TEXT,
+          decided_at TEXT,
+          UNIQUE (run_id, number)
+        );
+        CREATE UNIQUE INDEX narration_takes_one_open_per_run ON narration_takes (run_id) WHERE state IN ('generating', 'ready');
+      `);
+      target.exec(NARRATION_TAKES_NO_UPDATE_TRIGGER_DDL);
+      target.exec(NARRATION_TAKES_NO_DELETE_TRIGGER_DDL);
     },
   },
 ];
@@ -2069,6 +2123,160 @@ export function getFinalVideoBuilds(runId: string): FinalVideoBuild[] {
   }));
 }
 
+// ---- Narration takes (redo-scene-narration, JOS-282), design Decisions 2 and 8 ----
+
+interface NarrationTakeRow {
+  id: string;
+  run_id: string;
+  number: number;
+  base_version: number;
+  first_scene_id: string;
+  last_scene_id: string;
+  text_length: number;
+  provider_id: string;
+  state: NarrationTakeState;
+  provider_outcome: NarrationTakeProviderOutcome | null;
+  provider_request_id: string | null;
+  failure: string | null;
+  take_audio_path: string | null;
+  take_timestamps_path: string | null;
+  narration_path: string | null;
+  narration_timestamps_path: string | null;
+  preview_path: string | null;
+  requested_at: string;
+  sent_at: string | null;
+  finished_at: string | null;
+  decided_at: string | null;
+}
+
+function rowToNarrationTake(row: NarrationTakeRow): NarrationTake {
+  return {
+    id: row.id,
+    runId: row.run_id,
+    number: row.number,
+    baseVersion: row.base_version,
+    firstSceneId: row.first_scene_id,
+    lastSceneId: row.last_scene_id,
+    textLength: row.text_length,
+    providerId: row.provider_id,
+    state: row.state,
+    providerOutcome: row.provider_outcome,
+    providerRequestId: row.provider_request_id,
+    failure: row.failure,
+    takeAudioPath: row.take_audio_path,
+    takeTimestampsPath: row.take_timestamps_path,
+    narrationPath: row.narration_path,
+    narrationTimestampsPath: row.narration_timestamps_path,
+    previewPath: row.preview_path,
+    requestedAt: row.requested_at,
+    sentAt: row.sent_at,
+    finishedAt: row.finished_at,
+    decidedAt: row.decided_at,
+  };
+}
+
+export interface NewNarrationTake {
+  runId: string;
+  firstSceneId: string;
+  lastSceneId: string;
+  textLength: number;
+  providerId: string;
+  baseVersion: number;
+  requestedAt: string;
+}
+
+/**
+ * Records a generating take with the session's next number. `null` when the session already has an open take: the
+ * partial unique index decides, so two back-to-back requests cannot both be recorded.
+ */
+export function insertNarrationTake(input: NewNarrationTake): NarrationTake | null {
+  const id = ulid();
+  try {
+    db.prepare(
+      `INSERT INTO narration_takes (id, run_id, number, base_version, first_scene_id, last_scene_id, text_length, provider_id, state, requested_at)
+       SELECT ?, ?, COALESCE(MAX(number), 0) + 1, ?, ?, ?, ?, ?, 'generating', ? FROM narration_takes WHERE run_id = ?`,
+    ).run(id, input.runId, input.baseVersion, input.firstSceneId, input.lastSceneId, input.textLength, input.providerId, input.requestedAt, input.runId);
+  } catch (err) {
+    if (isUniqueConstraintError(err)) return null;
+    throw err;
+  }
+  return getNarrationTake(input.runId, id) ?? null;
+}
+
+export function getNarrationTake(runId: string, takeId: string): NarrationTake | undefined {
+  const row = getRow<NarrationTakeRow>("SELECT * FROM narration_takes WHERE id = ? AND run_id = ?", takeId, runId);
+  return row ? rowToNarrationTake(row) : undefined;
+}
+
+export function getNarrationTakes(runId: string): NarrationTake[] {
+  return allRows<NarrationTakeRow>("SELECT * FROM narration_takes WHERE run_id = ? ORDER BY number ASC", runId).map(rowToNarrationTake);
+}
+
+export function markNarrationTakeSent(takeId: string, sentAt: string): void {
+  db.prepare("UPDATE narration_takes SET sent_at = ? WHERE id = ? AND state = 'generating'").run(sentAt, takeId);
+}
+
+/** How the provider call ended, recorded whatever happens to the take next (it is what the usage report counts). */
+export function recordNarrationTakeProviderOutcome(
+  takeId: string,
+  outcome: NarrationTakeProviderOutcome,
+  finishedAt: string,
+  providerRequestId?: string,
+): void {
+  db.prepare("UPDATE narration_takes SET provider_outcome = ?, finished_at = ?, provider_request_id = COALESCE(?, provider_request_id) WHERE id = ? AND state = 'generating'").run(
+    outcome,
+    finishedAt,
+    providerRequestId ?? null,
+    takeId,
+  );
+}
+
+/** generating → ready, with the files the fit wrote. `false` when the take is no longer generating (e.g. failed at boot). */
+export function markNarrationTakeReady(takeId: string, files: NarrationTakeFiles, finishedAt: string): boolean {
+  const result = db
+    .prepare(
+      `UPDATE narration_takes SET state = 'ready', take_audio_path = ?, take_timestamps_path = ?, narration_path = ?, narration_timestamps_path = ?,
+         preview_path = ?, finished_at = COALESCE(finished_at, ?) WHERE id = ? AND state = 'generating'`,
+    )
+    .run(files.takeAudioPath, files.takeTimestampsPath, files.narrationPath, files.narrationTimestampsPath, files.previewPath, finishedAt, takeId);
+  return Number(result.changes) > 0;
+}
+
+/** generating → failed, with the cause the User reads. */
+export function failNarrationTake(takeId: string, failure: string, finishedAt: string): boolean {
+  const result = db
+    .prepare("UPDATE narration_takes SET state = 'failed', failure = ?, finished_at = COALESCE(finished_at, ?) WHERE id = ? AND state = 'generating'")
+    .run(failure, finishedAt, takeId);
+  return Number(result.changes) > 0;
+}
+
+/** Keep needs a ready take; discard a ready or failed one. `false` when the take is in no such state. */
+export function decideNarrationTake(takeId: string, decision: "kept" | "discarded", decidedAt: string): boolean {
+  const allowed = decision === "kept" ? "('ready')" : "('ready', 'failed')";
+  const result = db.prepare(`UPDATE narration_takes SET state = ?, decided_at = ? WHERE id = ? AND state IN ${allowed}`).run(decision, decidedAt, takeId);
+  return Number(result.changes) > 0;
+}
+
+/** design Decision 11 — at boot, a take still generating lost its answer; it is failed, never sent again. */
+export function failGeneratingNarrationTakes(failure: string, finishedAt: string): number {
+  const result = db.prepare("UPDATE narration_takes SET state = 'failed', failure = ?, finished_at = COALESCE(finished_at, ?) WHERE state = 'generating'").run(failure, finishedAt);
+  return Number(result.changes);
+}
+
+/** The narration every reader after registration uses: the latest kept take, else the original voice-over. */
+export function currentNarration(runId: string): CurrentNarration | undefined {
+  const voiceOver = getVoiceOver(runId);
+  if (!voiceOver) return undefined;
+  const timestamps = getNarrationTimestamps(runId);
+  const kept = allRows<NarrationTakeRow>("SELECT * FROM narration_takes WHERE run_id = ? AND state = 'kept' ORDER BY number ASC", runId);
+  const latest = kept.at(-1);
+  const base = { durationSeconds: voiceOver.durationSeconds, mechanism: timestamps?.mechanism ?? null };
+  if (!latest) {
+    return { ...base, version: 1, takeId: null, audioPath: voiceOver.audioPath, timestampsPath: timestamps?.path ?? null, spliced: false };
+  }
+  return { ...base, version: kept.length + 1, takeId: latest.id, audioPath: latest.narration_path!, timestampsPath: latest.narration_timestamps_path, spliced: true };
+}
+
 export function getAllInFlightScenes(): Scene[] {
   const rows = allRows<SceneRow>("SELECT * FROM scenes WHERE status = 'image-generating'");
   return rows.map(rowToScene);
@@ -2474,13 +2682,15 @@ export function resetAll(): void {
     db.exec("DROP TRIGGER scenes_no_delete");
     db.exec("DROP TRIGGER narration_timestamps_no_delete");
     db.exec("DROP TRIGGER final_video_builds_no_delete");
+    db.exec("DROP TRIGGER narration_takes_no_delete");
     db.exec(
-      "DELETE FROM phase_instants; DELETE FROM scene_pause_edits; DELETE FROM final_video_builds; DELETE FROM stage_attempts; DELETE FROM narration_timestamps; DELETE FROM voice_overs; DELETE FROM scene_video_results; DELETE FROM scene_results; DELETE FROM provider_requests; DELETE FROM provider_changes; DELETE FROM scenes; DELETE FROM runs; DELETE FROM active_providers; DELETE FROM provider_profiles;",
+      "DELETE FROM narration_takes; DELETE FROM phase_instants; DELETE FROM scene_pause_edits; DELETE FROM final_video_builds; DELETE FROM stage_attempts; DELETE FROM narration_timestamps; DELETE FROM voice_overs; DELETE FROM scene_video_results; DELETE FROM scene_results; DELETE FROM provider_requests; DELETE FROM provider_changes; DELETE FROM scenes; DELETE FROM runs; DELETE FROM active_providers; DELETE FROM provider_profiles;",
     );
     db.exec(VOICE_OVER_NO_DELETE_TRIGGER_DDL);
     db.exec(SCENE_NO_DELETE_TRIGGER_DDL);
     db.exec(NARRATION_TIMESTAMPS_NO_DELETE_TRIGGER_DDL);
     db.exec(FINAL_VIDEO_BUILDS_NO_DELETE_TRIGGER_DDL);
+    db.exec(NARRATION_TAKES_NO_DELETE_TRIGGER_DDL);
     db.exec("COMMIT");
   } catch (err) {
     db.exec("ROLLBACK");

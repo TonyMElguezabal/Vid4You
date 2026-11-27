@@ -147,9 +147,11 @@ describe("The only rmSync calls remove temporary work, never a project file (JOS
     }
   });
 
-  it("finds exactly the call sites design.md's Context table lists (db.ts, voiceOverPhase.ts, orchestrator.ts, ffmpegAssemblyTool.ts, adminSettingsRoutes.ts, clipOutputCheck.ts since JOS-265, and voiceLevel.ts since level-voice-over-volume: its temp folders)", () => {
+  it("finds exactly the call sites design.md's Context table lists (db.ts, voiceOverPhase.ts, orchestrator.ts, ffmpegAssemblyTool.ts, adminSettingsRoutes.ts, clipOutputCheck.ts since JOS-265, voiceLevel.ts since level-voice-over-volume, and narrationTake.ts and narrationTakeAudio.ts since redo-scene-narration: their temp folders)", () => {
     const files = new Set(findRmSyncCalls().map((call) => call.file));
-    expect(files).toEqual(new Set(["db.ts", "voiceOverPhase.ts", "orchestrator.ts", "ffmpegAssemblyTool.ts", "adminSettingsRoutes.ts", "clipOutputCheck.ts", "voiceLevel.ts"]));
+    expect(files).toEqual(
+      new Set(["db.ts", "voiceOverPhase.ts", "orchestrator.ts", "ffmpegAssemblyTool.ts", "adminSettingsRoutes.ts", "clipOutputCheck.ts", "voiceLevel.ts", "narrationTake.ts", "narrationTakeAudio.ts"]),
+    );
   });
 });
 

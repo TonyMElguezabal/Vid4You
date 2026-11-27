@@ -52,6 +52,11 @@ export interface AssemblyInput {
    */
   narrationEdits?: readonly NarrationEdit[];
   /**
+   * redo-scene-narration (JOS-282), design Decision 4 — the narration is a spliced FLAC, not the stored MP3: it is
+   * encoded once and measured like an edited one, even with no edits. Absent: the MP3 is copied as before.
+   */
+  encodeNarration?: boolean;
+  /**
    * The subtitles to burn in (add-burned-in-subtitles, JOS-237). Absent: none are asked for. `null`: the orchestrator
    * could not build them (the narration's timestamps are missing or do not match the script), and a tool that draws
    * subtitles MUST fail the attempt as not retryable rather than deliver a video without them. An array: draw these.

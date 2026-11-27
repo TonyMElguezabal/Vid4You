@@ -22,6 +22,9 @@ export interface VoiceSynthesisRequest {
   outputFormat: string;
   /** `"default"` leaves the provider's own speed; a number overrides it. */
   speed: "default" | number;
+  /** redo-scene-narration (JOS-282), design Decision 6 — a narration take's surrounding script, so its tone matches. */
+  previousText?: string;
+  nextText?: string;
 }
 
 export type VoiceSynthesisResult =
@@ -78,6 +81,9 @@ export function createElevenLabsVoiceProvider(
         apply_text_normalization: "on",
       };
       if (request.speed !== "default") body.voice_settings = { speed: request.speed };
+      // A take at the script's start or end has no context on that side: an empty one is not sent.
+      if (request.previousText) body.previous_text = request.previousText;
+      if (request.nextText) body.next_text = request.nextText;
 
       let response: Response;
       try {
@@ -159,6 +165,17 @@ function stubTimestamps(text: string): unknown {
   };
 }
 
+/** `text`'s characters spread evenly over the first `seconds` of the audio. */
+function stubTimestampsWithin(text: string, seconds: number): unknown {
+  const characters = [...text];
+  const step = seconds / Math.max(1, characters.length);
+  return {
+    characters,
+    character_start_times_seconds: characters.map((_, index) => index * step),
+    character_end_times_seconds: characters.map((_, index) => (index + 1) * step),
+  };
+}
+
 /** A deterministic stand-in for `VoiceProvider`, used by every test in this story instead of the real ElevenLabs adapter. */
 export function createStubVoiceProvider(
   mode: StubVoiceProviderMode,
@@ -187,6 +204,12 @@ export function createStubVoiceProvider(
           await new Promise((resolve) => setTimeout(resolve, options.lateAfterMs ?? lateAnswerDelayMs()));
           return { kind: "success", audio: createSilentMp3(options.audioSeconds ?? 1), providerRequestId: "stub-request-late" };
         case "success":
+          // redo-scene-narration (JOS-282), design Decision 6 — a take (a request with context) gets timestamps that fit
+          // its audio, over its first 75%, so a stubbed session's take can be fitted in tests and E2E.
+          if (request.previousText !== undefined || request.nextText !== undefined) {
+            const seconds = options.audioSeconds ?? 1;
+            return { kind: "success", audio: createSilentMp3(seconds), nativeTimestamps: stubTimestampsWithin(request.text, seconds * 0.75), providerRequestId: "stub-take-request" };
+          }
           return {
             kind: "success",
             audio: createSilentMp3(options.audioSeconds ?? 1),

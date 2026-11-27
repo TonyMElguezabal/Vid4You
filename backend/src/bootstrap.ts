@@ -14,6 +14,7 @@ import { setVoiceOverLogger } from "./voiceOverPhase.ts";
 import { setErrorLog, shutdownTelemetry } from "./telemetry/index.ts";
 import { startUpdateCheck } from "./telemetry/updateCheck.ts";
 import { installProcessErrorHandlers } from "./telemetry/processHandlers.ts";
+import { setNarrationTakeLogger } from "./narrationTake.ts";
 import { rebuildScheduler } from "./retry/retryScheduler.ts";
 import { startAttemptTimeoutWatcher } from "./retry/attemptTimeoutWatcher.ts";
 import { BODY_LIMIT_BYTES, PORT, bootLogFields, buildApp, configureAssemblyTool, configureProviderStubs, initTelemetry, type StaticAssetReader } from "./server.ts";
@@ -87,6 +88,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Fas
   const app = await buildApp({ staticAssets: options.staticAssets });
   setVoiceOverLogger(app.log);
   setDecompositionLogger(app.log);
+  setNarrationTakeLogger(app.log); // redo-scene-narration (JOS-282): ids, lengths and outcomes only
   setErrorLog(app.log); // verify-internal-workflow (JOS-243) D5 — every reported error reaches the local log file
   for (const warning of stubWarnings) app.log.warn(warning);
   // add-burned-in-subtitles (JOS-237), design Decision 5 — a machine whose ffmpeg cannot draw subtitles finds out now,

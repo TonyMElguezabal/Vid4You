@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { getFinalVideoBuilds, getNarrationTimestamps, getRun, getScenePauseEdits, getScenesForRun, getVoiceOver, resolveArtefactPath } from "./db.ts";
+import { currentNarration, getFinalVideoBuilds, getRun, getScenePauseEdits, getScenesForRun, resolveArtefactPath } from "./db.ts";
 import type { TimestampCharacter } from "./narrationTimestamps.ts";
 import { derivePauses, pauseRange, type PauseEditedScene } from "./scenePause.ts";
 import type { ScenePauseView } from "./types.ts";
@@ -41,10 +41,10 @@ export function readStoredCharacters(projectFolder: string, relativePath: string
 /** The session's scenes with their derived pauses, or null when the session has no voice-over or no readable timestamps. */
 export function loadSessionPauses(runId: string): SessionPauses | null {
   const run = getRun(runId);
-  const voiceOver = getVoiceOver(runId);
-  const timestamps = getNarrationTimestamps(runId);
-  if (!run || !voiceOver || !timestamps) return null;
-  const characters = readStoredCharacters(run.projectFolder, timestamps.path);
+  // redo-scene-narration (JOS-282), design Decision 2 — the current narration: the latest kept take, else the original.
+  const narration = currentNarration(runId);
+  if (!run || !narration?.timestampsPath) return null;
+  const characters = readStoredCharacters(run.projectFolder, narration.timestampsPath);
   if (!characters) return null;
 
   const scenes = getScenesForRun(runId).sort((a, b) => a.index - b.index);
@@ -54,7 +54,7 @@ export function loadSessionPauses(runId: string): SessionPauses | null {
     characters,
   );
   return {
-    voiceOverDurationSeconds: voiceOver.durationSeconds,
+    voiceOverDurationSeconds: narration.durationSeconds,
     scenes: scenes.map((scene) => ({
       id: scene.id,
       index: scene.index,

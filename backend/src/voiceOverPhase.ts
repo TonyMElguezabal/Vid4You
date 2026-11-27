@@ -212,9 +212,9 @@ function scriptFingerprint(script: string): { scriptLength: number; scriptSha256
  * attempt (automatic or manual retry) is a scheduled attempt that the retry
  * scheduler claims and hands to `sendVoiceAttempt`.
  */
-type VoiceParameters = { voiceId: string; model: string; outputFormat: string; speed: "default" | number };
+export type VoiceParameters = { voiceId: string; model: string; outputFormat: string; speed: "default" | number };
 
-function voiceParametersFor(providerId: string): VoiceParameters {
+export function voiceParametersFor(providerId: string): VoiceParameters {
   ensureProfiles();
   const profile = getProfile(resolveProfileId("voice", providerId));
   return profile && profile.stage === "voice" ? (profile.parameters as VoiceParameters) : VOICE_PROVIDER;
