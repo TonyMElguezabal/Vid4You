@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
+import type { AssemblyProgress } from "./assemblyProgress.ts";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -409,6 +410,27 @@ function finalVideoStatus(runId: string, finalVideoPath: string, staleScenes: bo
   return status;
 }
 
+// final-video-build-progress, design Decision 4 — the latest progress of each session's running assembly attempt, and
+// when it was last broadcast. In memory only: it means nothing once the process that runs the attempt is gone.
+const assemblyProgressByRun = new Map<string, AssemblyProgress>();
+const assemblyProgressBroadcastAt = new Map<string, number>();
+const ASSEMBLY_PROGRESS_BROADCAST_MS = 1_000;
+
+function reportAssemblyProgress(runId: string, progress: AssemblyProgress): void {
+  const previous = assemblyProgressByRun.get(runId);
+  assemblyProgressByRun.set(runId, progress);
+  const now = Date.now();
+  const stepChanged = previous?.step !== progress.step;
+  if (!stepChanged && now - (assemblyProgressBroadcastAt.get(runId) ?? -Infinity) < ASSEMBLY_PROGRESS_BROADCAST_MS) return;
+  assemblyProgressBroadcastAt.set(runId, now);
+  broadcast(runId);
+}
+
+function clearAssemblyProgress(runId: string): void {
+  assemblyProgressByRun.delete(runId);
+  assemblyProgressBroadcastAt.delete(runId);
+}
+
 export function toSnapshot(runId: string): SessionSnapshot | undefined {
   const run = getRun(runId);
   if (!run) return undefined;
@@ -461,6 +483,8 @@ export function toSnapshot(runId: string): SessionSnapshot | undefined {
   // redo-scene-narration (JOS-282), design Decision 10.
   const narration = narrationReadModel(runId);
   if (narration.narration) session.narration = narration.narration;
+  const assemblyProgress = assemblyProgressByRun.get(runId);
+  if (assemblyProgress) session.assemblyProgress = assemblyProgress;
   // adjust-scene-pause (JOS-190), Decision 9 — each scene's dial, only once there is a final video to rebuild.
   const pauseViews = run.finalVideoPath != null ? scenePauseViews(runId) : new Map<string, ScenePauseView>();
   return {
@@ -726,9 +750,13 @@ async function runAssemblyAttempt(runId: string, attemptNumber: number): Promise
       ...(narrationEdits.length > 0 ? { narrationEdits } : {}),
       ...(narration.spliced ? { encodeNarration: true } : {}),
       subtitles,
+      onProgress: (progress) => reportAssemblyProgress(runId, progress),
     });
   } catch (err: unknown) {
     result = { kind: "failed_transient" as const, reason: err instanceof Error ? err.message : String(err) };
+  } finally {
+    // Every outcome below broadcasts; the read then carries no progress (spec "The session read carries the assembly progress").
+    clearAssemblyProgress(runId);
   }
 
   const finishedAt = new Date().toISOString();

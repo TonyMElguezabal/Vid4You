@@ -551,6 +551,37 @@ paths:
                         additionalProperties: false
                         description: "adjust-scene-pause (JOS-190): present once the session has a final
                           video. Derived on every read, never stored."
+                      assemblyProgress:
+                        type: object
+                        properties:
+                          step:
+                            type: string
+                            enum:
+                              - preparing-clips
+                              - encoding
+                            description: "preparing-clips: each clip is normalized in turn. encoding: the final
+                              video is encoded with the narration and subtitles."
+                          clipsDone:
+                            type: integer
+                            minimum: 0
+                          clipsTotal:
+                            type: integer
+                            minimum: 0
+                          percent:
+                            type: integer
+                            minimum: 0
+                            maximum: 99
+                            description: Frames encoded over both steps out of twice the video's frames. Never
+                              decreases within an attempt.
+                        required:
+                          - step
+                          - clipsDone
+                          - clipsTotal
+                          - percent
+                        additionalProperties: false
+                        description: "final-video-build-progress: present only while an assembly attempt of
+                          this session runs in this process (first build, retry or rebuild). Kept in memory,
+                          never stored."
                       narration:
                         type: object
                         properties:
@@ -1229,6 +1260,37 @@ paths:
                         additionalProperties: false
                         description: "adjust-scene-pause (JOS-190): present once the session has a final
                           video. Derived on every read, never stored."
+                      assemblyProgress:
+                        type: object
+                        properties:
+                          step:
+                            type: string
+                            enum:
+                              - preparing-clips
+                              - encoding
+                            description: "preparing-clips: each clip is normalized in turn. encoding: the final
+                              video is encoded with the narration and subtitles."
+                          clipsDone:
+                            type: integer
+                            minimum: 0
+                          clipsTotal:
+                            type: integer
+                            minimum: 0
+                          percent:
+                            type: integer
+                            minimum: 0
+                            maximum: 99
+                            description: Frames encoded over both steps out of twice the video's frames. Never
+                              decreases within an attempt.
+                        required:
+                          - step
+                          - clipsDone
+                          - clipsTotal
+                          - percent
+                        additionalProperties: false
+                        description: "final-video-build-progress: present only while an assembly attempt of
+                          this session runs in this process (first build, retry or rebuild). Kept in memory,
+                          never stored."
                       narration:
                         type: object
                         properties:

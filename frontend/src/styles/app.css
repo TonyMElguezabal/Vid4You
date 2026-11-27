@@ -1104,6 +1104,55 @@ progress::-moz-progress-bar {
   color: var(--color-muted);
 }
 
+/* final-video-build-progress — the build's progress bar, in the existing tokens for both themes. */
+.final-video-progress {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.final-video-progress progress {
+  appearance: none;
+  width: 100%;
+  height: 8px;
+  border: none;
+  border-radius: var(--radius-control);
+  background: var(--color-surface-sunken);
+  color: var(--color-accent);
+  overflow: hidden;
+}
+
+.final-video-progress progress::-webkit-progress-bar {
+  background: var(--color-surface-sunken);
+}
+
+.final-video-progress progress::-webkit-progress-value {
+  background: var(--color-accent);
+  transition: width 300ms ease-out;
+}
+
+.final-video-progress progress::-moz-progress-bar {
+  background: var(--color-accent);
+}
+
+.final-video-progress-line {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  font-size: var(--font-size-sm);
+  color: var(--color-muted);
+}
+
+.final-video-progress-percent {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .final-video-progress progress::-webkit-progress-value {
+    transition: none;
+  }
+}
+
 /* adjust-scene-pause (JOS-190) — the dial for the silence after a scene, inside an expanded scene card. */
 .pause-dial {
   display: flex;

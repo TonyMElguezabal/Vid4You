@@ -375,6 +375,7 @@ export interface ProviderRequestRow {
   providerId: string | null;
 }
 
+import type { AssemblyProgress } from "./assemblyProgress.ts";
 import type { StageDiagnostic } from "./stageDiagnostics.ts";
 
 // ---- Wire contract (define-live-updates, JOS-183, Decisions 2/4/8) ----
@@ -431,6 +432,8 @@ export interface SessionEventPayload {
   finalVideo?: FinalVideoStatus;
   /** redo-scene-narration (JOS-282), design Decision 10 — present once the narration exists. Derived on every read. */
   narration?: NarrationView;
+  /** final-video-build-progress, design Decision 4 — present only while an assembly attempt of this session runs. In memory. */
+  assemblyProgress?: AssemblyProgress;
 }
 
 /** The session's narration version, and its latest take while generating, waiting for review, or failed and not dismissed. */

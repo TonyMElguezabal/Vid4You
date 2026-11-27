@@ -5,6 +5,7 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { AssemblyInput, AssemblyResult, AssemblyTool } from "./assemblyTool.ts";
+import { createAssemblyProgress } from "./assemblyProgress.ts";
 
 export type StubAssemblyMode =
   | { kind: "success" }
@@ -24,18 +25,41 @@ function writePlaceholder(outputPath: string): AssemblyResult {
   return { kind: "success", outputPath };
 }
 
+/**
+ * final-video-build-progress, design Decision 3 — reports both steps through the real tracker: at once with no delay,
+ * or spread over `delayMs` (half for the clips, half for four encode reports) so a page can watch the bar.
+ */
+async function reportStubProgress(input: AssemblyInput, delayMs = 0): Promise<void> {
+  const frameCounts = input.clips.map((clip) => clip.frameCount);
+  const progress = createAssemblyProgress(frameCounts, (report) => input.onProgress?.(report));
+  const wait = (ms: number) => (ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : Promise.resolve());
+  for (let index = 0; index < frameCounts.length; index++) {
+    progress.clipStarted(index);
+    await wait(delayMs / 2 / frameCounts.length);
+    progress.clipFinished(index);
+  }
+  if (frameCounts.length === 0) await wait(delayMs / 2); // the whole delay is still spent
+  progress.encodingStarted();
+  const videoFrames = frameCounts.reduce((sum, count) => sum + count, 0);
+  for (let quarter = 1; quarter <= 4; quarter++) {
+    await wait(delayMs / 8);
+    progress.frames((videoFrames * quarter) / 4);
+  }
+}
+
 export function createStubAssemblyTool(mode: StubAssemblyMode = { kind: "success" }): AssemblyTool {
   return {
     async assemble(input: AssemblyInput): Promise<AssemblyResult> {
       switch (mode.kind) {
         case "success":
+          await reportStubProgress(input);
           return writePlaceholder(input.outputPath);
         case "transient-failure":
           return { kind: "failed_transient", reason: mode.reason ?? "stub transient failure" };
         case "not-retryable-failure":
           return { kind: "failed_not_retryable", reason: mode.reason ?? "stub not-retryable failure" };
         case "slow-success":
-          await new Promise((resolve) => setTimeout(resolve, mode.delayMs));
+          await reportStubProgress(input, mode.delayMs);
           return writePlaceholder(input.outputPath);
       }
     },

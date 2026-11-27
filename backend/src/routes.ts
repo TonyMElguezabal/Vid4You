@@ -325,6 +325,15 @@ const sessionResponseSchema = z.object({
     })
     .optional()
     .describe("adjust-scene-pause (JOS-190): present once the session has a final video. Derived on every read, never stored."),
+  assemblyProgress: z
+    .object({
+      step: z.enum(["preparing-clips", "encoding"]).describe("preparing-clips: each clip is normalized in turn. encoding: the final video is encoded with the narration and subtitles."),
+      clipsDone: z.number().int().min(0),
+      clipsTotal: z.number().int().min(0),
+      percent: z.number().int().min(0).max(99).describe("Frames encoded over both steps out of twice the video's frames. Never decreases within an attempt."),
+    })
+    .optional()
+    .describe("final-video-build-progress: present only while an assembly attempt of this session runs in this process (first build, retry or rebuild). Kept in memory, never stored."),
   narration: z
     .object({
       version: z.number().int().min(1).describe("1 for the original voice-over; one more for each kept narration take."),
