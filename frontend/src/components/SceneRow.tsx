@@ -128,13 +128,14 @@ export function SceneRow({ scene, paused, onRetry, onCorrect, onSetPause, onRebu
       {!expanded && !clipPlayer && (
         <div className={`scene-thumb${!imageUrl && scene.state === "image-generating" ? " shimmer" : ""}`}>
           {imageUrl ? <img src={resolveResultUrl(imageUrl)} alt="" /> : <Icon name={isFailed ? "failed" : "queued"} />}
-          <span className="scene-index" aria-hidden="true">
-            {scene.index}
-          </span>
         </div>
       )}
       <div className="scene-body">
         <div className="scene-line">
+          {/* watch-scene-clips, "Every scene card shows its scene number" — not on the thumbnail, which a clip replaces. */}
+          <span className="scene-index" aria-hidden="true">
+            Scene {scene.index}
+          </span>
           <StatusPill statusClass={statusClass} label={SCENE_STATE_LABEL[scene.state]} />
           {scene.narrationRedone && <span className="scene-badge">Narration redone</span>}
           {scene.requestedDurationSeconds !== undefined && <span className="scene-duration">{scene.requestedDurationSeconds} s</span>}

@@ -239,3 +239,22 @@ describe("Two quick Plays (JOS-281)", () => {
     expect(pauseFirst).toHaveBeenCalledTimes(1);
   });
 });
+
+// watch-scene-clips, spec "Every scene card shows its scene number" — the number no longer lives on the thumbnail,
+// which the clip player replaces.
+describe("the scene number on the card", () => {
+  it.each([
+    ["before its image", makeScene({ index: 4, state: "image-generating" })],
+    ["with its image", makeScene({ index: 4, state: "image-complete", result: { imageUrl: imageUrl(4) } })],
+    ["with its clip", withClip(4)],
+  ])("shows Scene 4 %s", (_label, scene) => {
+    render(<SceneRow scene={scene} {...props} />);
+    expect(within(screen.getByRole("listitem", { name: "Scene 4" })).getByText("Scene 4")).toBeInTheDocument();
+  });
+
+  it("still shows Scene 4 once the card is expanded", async () => {
+    render(<SceneRow scene={withClip(4)} {...props} />);
+    await userEvent.click(screen.getByRole("button", { name: "View scene 4 details" }));
+    expect(within(screen.getByRole("listitem", { name: "Scene 4" })).getByText("Scene 4")).toBeInTheDocument();
+  });
+});

@@ -923,9 +923,7 @@ progress::-moz-progress-bar {
 }
 
 .scene-index {
-  position: absolute;
-  top: 0.5rem;
-  left: 0.5rem;
+  flex: none;
   padding: 0 0.45rem;
   border-radius: 6px;
   background: var(--color-surface);
@@ -945,9 +943,13 @@ progress::-moz-progress-bar {
 
 .scene-line {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
   gap: var(--space-2);
+}
+
+.scene-line .scene-duration {
+  margin-left: auto;
 }
 
 .scene-duration {
