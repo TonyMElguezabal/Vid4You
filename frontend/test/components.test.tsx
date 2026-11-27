@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { SceneList } from "../src/components/SceneList";
 import { SceneRow } from "../src/components/SceneRow";
+import { NarrationTakePanel } from "../src/components/NarrationTakePanel";
 import { SessionHeader } from "../src/components/SessionHeader";
 import { FinalVideoDownload } from "../src/components/FinalVideoDownload";
 import App from "../src/App";
@@ -554,6 +555,26 @@ describe("Accessible naming convention (Decision 5)", () => {
 
     expect(screen.getByRole("group", { name: "Scene 7 clip player" })).toBeInTheDocument();
     for (const action of ["Play", "Pause", "Stop"]) expect(screen.getByRole("button", { name: `${action} scene 7 clip` })).toBeInTheDocument();
+  });
+
+  it("names Redo narration, its form, its last-scene choice, and the take review after their scenes (JOS-282)", async () => {
+    const scene = makeScene({ sceneId: "n1", index: 7, state: "chunk-complete", narrationRedoable: true });
+    const quote = async () => ({ text: "Seven.", characters: 6, estimatedCost: null, pauseEditsReset: [], limit: 2500 });
+    render(<SceneRow scene={scene} onRetry={async () => {}} onCorrect={async () => {}} narrationRedo={{ throughScenes: [{ sceneId: "n1", index: 7 }], quote, create: async () => {} }} />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "View scene 7 details" }));
+    await user.click(screen.getByRole("button", { name: "Redo scene 7 narration" }));
+
+    expect(screen.getByRole("form", { name: "Redo scene 7 narration" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Through scene" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Read scene 7 again" })).toBeInTheDocument();
+
+    const handlers = { quote, create: async () => {}, keep: async () => {}, discard: async () => {} };
+    render(<NarrationTakePanel narration={{ version: 1, take: { takeId: "t", state: "ready", firstSceneIndex: 7, lastSceneIndex: 8, previewUrl: "/p" } }} handlers={handlers} />);
+    expect(screen.getByRole("region", { name: "New narration" })).toBeInTheDocument();
+    expect(screen.getByLabelText("New narration of scenes 7 to 8")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Keep new narration" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Discard" })).toBeInTheDocument();
   });
 });
 

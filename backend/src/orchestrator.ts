@@ -31,6 +31,8 @@ import {
   getStageAttempts,
   getSubmittedScenesForRun,
   getVoiceOver,
+  currentNarration,
+  failGeneratingNarrationTakes,
   getScenePauseEdits,
   insertFinalVideoBuild,
   insertProviderRequest,
@@ -119,6 +121,7 @@ import {
 } from "./types.ts";
 import { checkClip, type ClipCheckOutcome } from "./clipOutputCheck.ts";
 import { redactPaths } from "./util/redactPaths.ts";
+import { narrationReadModel } from "./narrationTake.ts";
 import { recordCaughtError } from "./telemetry/index.ts";
 
 /** 1 initial attempt + this many automatic retries, per PRD §10.1 (C2). */
@@ -456,6 +459,9 @@ export function toSnapshot(runId: string): SessionSnapshot | undefined {
     finalVideoUrl: run.finalVideoPath != null ? `/sessions/${run.id}/download/final-video` : undefined,
     finalVideo: run.finalVideoPath != null ? finalVideoStatus(runId, run.finalVideoPath, run.finalVideoStale) : undefined,
   };
+  // redo-scene-narration (JOS-282), design Decision 10.
+  const narration = narrationReadModel(runId);
+  if (narration.narration) session.narration = narration.narration;
   // adjust-scene-pause (JOS-190), Decision 9 — each scene's dial, only once there is a final video to rebuild.
   const pauseViews = run.finalVideoPath != null ? scenePauseViews(runId) : new Map<string, ScenePauseView>();
   return {
@@ -464,6 +470,8 @@ export function toSnapshot(runId: string): SessionSnapshot | undefined {
       ...sceneToPayload(s, requestCounts.get(s.id)),
       held: heldSceneIds.has(s.id) || undefined,
       pause: pauseViews.get(s.id),
+      narrationRedone: narration.redone.has(s.id) || undefined,
+      narrationRedoable: narration.redoable.has(s.id) || undefined,
     })),
   };
 }
@@ -634,8 +642,8 @@ async function runAssemblyAttempt(runId: string, attemptNumber: number): Promise
     return;
   }
 
-  const voiceOver = getVoiceOver(runId);
-  if (!voiceOver) {
+  const narration = currentNarration(runId);
+  if (!narration) {
     if (rebuild) return refuseRebuild(runId, "the session has no stored voice-over");
     recordAssemblyFailure(runId, "the session has no stored voice-over", false, null);
     broadcast(runId);
@@ -710,12 +718,14 @@ async function runAssemblyAttempt(runId: string, attemptNumber: number): Promise
   try {
     result = await tool.assemble({
       clips,
-      voiceOverPath: resolveArtefactPath(run.projectFolder, voiceOver.audioPath),
+      // redo-scene-narration (JOS-282), design Decisions 2 and 4 — the current narration; a spliced one is encoded once.
+      voiceOverPath: resolveArtefactPath(run.projectFolder, narration.audioPath),
       outputPath: tempOutputPath,
       fps: FINAL_OUTPUT.fps,
       width: FINAL_OUTPUT.width,
       height: FINAL_OUTPUT.height,
       ...(narrationEdits.length > 0 ? { narrationEdits } : {}),
+      ...(narration.spliced ? { encodeNarration: true } : {}),
       subtitles,
     });
   } catch (err: unknown) {
@@ -806,6 +816,16 @@ function triggerAssemblyIfReady(runId: string): void {
   const run = getRun(runId);
   if (run?.finalVideoPath && run.finalVideoStale && !run.rebuildRequestedAt && !requestFinalVideoRebuild(runId)) return;
   launchAssemblyPhase(runId);
+}
+
+/**
+ * redo-scene-narration (JOS-282), design Decision 7 — after a kept take, a final video that predates the narration is
+ * rebuilt as after a scene rebuild: once every scene is complete, and held while the session is paused. A session with
+ * no final video uses the current narration in its first assembly, which its own flow launches.
+ */
+export function rebuildWhenReady(runId: string): void {
+  const run = getRun(runId);
+  if (run?.finalVideoPath && run.finalVideoStale) triggerAssemblyIfReady(runId);
 }
 
 /**
@@ -1924,7 +1944,12 @@ function recordMissingAssemblyFailuresOnBoot(): void {
   }
 }
 
+/** redo-scene-narration (JOS-282), design Decision 11 — the cause of a take whose answer a restart lost. */
+export const NARRATION_TAKE_RESTART_CAUSE = "The app restarted before the new reading arrived. Try again.";
+
 export function recoverOnBoot(): SettleSummary {
+  // A take is never resent: the provider may already have billed it (design Decision 11).
+  failGeneratingNarrationTakes(NARRATION_TAKE_RESTART_CAUSE, new Date().toISOString());
   occupyResumedRequestSlots();
   const summary = settleAllInFlight();
   recordMissingAssemblyFailuresOnBoot();

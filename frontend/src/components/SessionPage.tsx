@@ -4,6 +4,7 @@ import { SceneList } from "./SceneList";
 import type { SceneRebuildHandler } from "./SceneRow";
 import { SceneProgressSummary } from "./SceneProgressSummary";
 import { FinalVideoDownload } from "./FinalVideoDownload";
+import { NarrationTakePanel, type NarrationTakeHandlers } from "./NarrationTakePanel";
 import { PhaseSection } from "./PhaseSection";
 import { PhaseStepper } from "./PhaseStepper";
 import { Icon } from "./Icon";
@@ -30,6 +31,8 @@ interface Props {
   onRebuildFinalVideo?: () => Promise<unknown>;
   /** Rebuilds one scene's image and clip (rebuild-scene, JOS-235). */
   onRebuildScene?: SceneRebuildHandler;
+  /** redo-scene-narration (JOS-282) — reads scenes again, reviews, keeps or discards the take. */
+  narrationTakes?: NarrationTakeHandlers;
 }
 
 /** "14 Oct, 10:42" in the User's own locale and time zone; the instant stays machine-readable on the element. */
@@ -62,6 +65,7 @@ export function SessionPage({
   onSetPause,
   onRebuildFinalVideo,
   onRebuildScene,
+  narrationTakes,
 }: Props) {
   if (notFound) {
     return (
@@ -129,8 +133,9 @@ export function SessionPage({
         {session.phases.map((progress) => (
           <PhaseSection key={progress.phase} progress={progress} onRetry={() => onRetryPhase(progress.phase)}>
             {progress.phase === "scenes" && (
-              <SceneList scenes={scenes} paused={session.paused} onRetry={onRetry} onCorrect={onCorrect} onSetPause={onSetPause} onRebuild={onRebuildScene} sessionState={session.state} />
+              <SceneList scenes={scenes} paused={session.paused} onRetry={onRetry} onCorrect={onCorrect} onSetPause={onSetPause} onRebuild={onRebuildScene} sessionState={session.state} narration={session.narration} narrationTakes={narrationTakes} />
             )}
+            {progress.phase === "assembly" && narrationTakes && <NarrationTakePanel narration={session.narration} handlers={narrationTakes} />}
             {progress.phase === "assembly" && (
               <FinalVideoDownload
                 url={session.finalVideoUrl ? resolveResultUrl(session.finalVideoUrl) : undefined}

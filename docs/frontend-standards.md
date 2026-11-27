@@ -56,6 +56,8 @@ frontend/
 │   │   ├── PauseDial.tsx         # the silence after a scene (adjust-scene-pause, JOS-190)
 │   │   ├── SceneList.tsx
 │   │   ├── SceneRow.tsx          # a scene card
+│   │   ├── NarrationRedoForm.tsx # Redo scene N narration: quote, then confirm (redo-scene-narration, JOS-282)
+│   │   ├── NarrationTakePanel.tsx # New narration: preview, Keep or Discard (JOS-282)
 │   │   ├── FinalVideoDownload.tsx
 │   │   ├── StatusPill.tsx        # label + icon + status class, drawn the same everywhere
 │   │   └── Icon.tsx              # ten inline glyphs, always hidden from the accessibility tree
@@ -65,6 +67,7 @@ frontend/
 │   │   └── status.ts            # the one state→status-class (and →icon) mapping every component uses
 │   ├── phaseLabels.ts            # phase and phase-status words
 │   ├── pauseRefusals.ts          # pause/rebuild and session pause/continue refusals as sentences
+│   ├── narrationTakeRefusals.ts  # narration-take refusals as sentences (JOS-282)
 │   ├── statusLabels.ts           # scene and session state words, affected stage, warning sentences
 │   ├── types.ts                 # mirrors the backend's wire contract (see Not Yet Decided)
 │   └── App.tsx                  # identifier-based routing via a URL query param
@@ -158,6 +161,8 @@ Fixed here as a documented convention, not left to per-story judgement (`docs/ad
 | Retry a failed scene | `Retry scene {index}` | `Retry scene 7` |
 | A scene's clip player (JOS-281) | `Scene {index} clip player` (`role="group"` on the card, in the thumbnail's place, or at the top of the expanded media column); the `<video>` is `Scene {index} clip` (no native controls, `preload="none"`, the scene image as poster); buttons `Play scene {index} clip`, `Pause scene {index} clip`, `Stop scene {index} clip`; a playback failure is `Scene {index} clip could not be played.` in a `role="status"`. Starting one scene clip pauses any other | `Play scene 7 clip` |
 | Rebuild a generated scene (image and clip) | `Rebuild scene {index}` (opens a form named `Rebuild scene {index}`; submit `Rebuild image and clip`) | `Rebuild scene 7` |
+| Redo a scene's narration (JOS-282) | `Redo scene {index} narration` (in the expanded card, only while the scene is redoable and no take is open; opens a form named `Redo scene {index} narration` with the select `Through scene`, the text, the character count and the cost; submit `Read {range} again`, then `Cancel`). A redone scene shows the badge `Narration redone` beside its state | `Read scenes 3 to 5 again` |
+| Review a narration take (JOS-282) | The region `New narration` in the final-video section; the `<audio>` is `New narration of {range}` (native controls, `preload="none"`); buttons `Keep new narration` and `Discard`; a failed take shows its cause in `role="alert"` and a `Dismiss` button. A refusal is a sentence in `role="status"` | `New narration of scene 1` |
 | Retry a failed voice-over (JOS-155) | `Retry voice-over` (the same shared `PhaseRetryButton`; offered only when the failure is `retryable`) | `Retry voice-over` |
 | Retry a failed decomposition | `Retry decomposition` (the shared `PhaseRetryButton`, rendered by `PhaseSection` from `phaseActions`) | `Retry decomposition` |
 | Retry a failed assembly (JOS-159) | `Retry final video` (the same shared `PhaseRetryButton`; offered whatever `retryable` is — Decision 7) | `Retry final video` |

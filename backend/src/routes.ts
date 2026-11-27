@@ -1,4 +1,4 @@
-import type { FastifyPluginAsync } from "fastify";
+import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import { recordError, recordProductEvent, setConsent } from "./telemetry/index.ts";
 import { getUpdateResult } from "./telemetry/updateCheck.ts";
 import { BUILD } from "./config/build.ts";
@@ -16,12 +16,22 @@ import { retryAssembly } from "./assemblyRetry.ts";
 import { retryVoiceOver } from "./voiceOverRetry.ts";
 import { rebuildFinalVideo } from "./finalVideoRebuild.ts";
 import { rebuildScene } from "./sceneRebuild.ts";
+import {
+  createNarrationTake,
+  discardNarrationTake,
+  keepNarrationTake,
+  MAX_TAKE_CHARACTERS,
+  quoteNarrationTake,
+  type TakeCreateRefusal,
+  type TakeDecisionRefusal,
+} from "./narrationTake.ts";
 import { setScenePause } from "./scenePauseEdit.ts";
 import { randomUUID } from "node:crypto";
 import {
   createRun,
   getRun,
   getSceneForRun,
+  getNarrationTake,
   insertRegisteredScenes,
   commitSceneResult,
   markImageComplete,
@@ -224,6 +234,11 @@ const sceneResponseSchema = z.object({
     .describe(
       "adjust-scene-pause (JOS-190): the dial for the silence after this scene. Present only once the session has a final video and this scene's pause can be derived. Derived on every read; the stored interval is never changed.",
     ),
+  narrationRedone: z.boolean().optional().describe("redo-scene-narration (JOS-282): true when a kept narration take covers this scene; absent otherwise."),
+  narrationRedoable: z
+    .boolean()
+    .optional()
+    .describe("redo-scene-narration (JOS-282): true when this scene's narration is located in the current timestamps, so it can be read again; absent otherwise."),
   updatedAt: z.string(),
 });
 
@@ -300,7 +315,9 @@ const sessionResponseSchema = z.object({
     .object({
       version: z.number().int().min(1).describe("1 for the original final-video.mp4; 2 onwards for each rebuild. finalVideoUrl always serves this version."),
       pendingPauseEdits: z.boolean().describe("True when the User's pause edits differ from those this version was built with, so a rebuild would change it."),
-      staleScenes: z.boolean().describe("True when a scene was rebuilt after this version was built, so a rebuild would change it (rebuild-scene, JOS-235)."),
+      staleScenes: z
+        .boolean()
+        .describe("True when a scene was rebuilt or a narration take was kept after this version was built, so a rebuild would change it (rebuild-scene, JOS-235; redo-scene-narration, JOS-282)."),
       rebuildFailure: z
         .object({ cause: z.string() })
         .optional()
@@ -308,6 +325,23 @@ const sessionResponseSchema = z.object({
     })
     .optional()
     .describe("adjust-scene-pause (JOS-190): present once the session has a final video. Derived on every read, never stored."),
+  narration: z
+    .object({
+      version: z.number().int().min(1).describe("1 for the original voice-over; one more for each kept narration take."),
+      take: z
+        .object({
+          takeId: z.string(),
+          state: z.enum(["generating", "ready", "failed"]),
+          firstSceneIndex: z.number().int(),
+          lastSceneIndex: z.number().int(),
+          previewUrl: z.string().optional().describe("Present while the take waits for review: its preview, inline, with byte ranges."),
+          failure: z.string().optional().describe("Present when the take failed: a cause written for a person, never credentials."),
+        })
+        .optional()
+        .describe("The latest take while it is generating, waiting for review, or failed and not yet discarded."),
+    })
+    .optional()
+    .describe("redo-scene-narration (JOS-282): present once the narration exists. Derived on every read; never carries the script's text."),
 });
 
 const languageResponseSchema = z.array(z.object({ code: z.string(), label: z.string() }));
@@ -411,6 +445,27 @@ export function parseByteRange(header: string | undefined, size: number): { star
   const end = match[2] === "" ? size - 1 : Math.min(Number(match[2]), size - 1);
   if (start >= size) return "unsatisfiable";
   return end < start ? null : { start, end };
+}
+
+/**
+ * watch-scene-clips (JOS-281), extracted by redo-scene-narration (JOS-282), design Decision 9 — sends a stored file
+ * inline with `Accept-Ranges: bytes`: 200 whole, 206 for one satisfiable range, 416 past the end.
+ */
+function sendFileWithRanges(reply: FastifyReply, fullPath: string, contentType: string, rangeHeader: string | undefined): FastifyReply {
+  const size = statSync(fullPath).size;
+  reply.header("Accept-Ranges", "bytes");
+  const range = parseByteRange(rangeHeader, size);
+  if (range === "unsatisfiable") {
+    reply.code(416).header("Content-Range", `bytes */${size}`);
+    return reply.send();
+  }
+  reply.type(contentType);
+  if (!range) {
+    reply.header("Content-Length", size);
+    return reply.send(createReadStream(fullPath));
+  }
+  reply.code(206).header("Content-Range", `bytes ${range.start}-${range.end}/${size}`).header("Content-Length", range.end - range.start + 1);
+  return reply.send(createReadStream(fullPath, range));
 }
 
 export const routes: FastifyPluginAsync = async (app) => {
@@ -864,22 +919,121 @@ export const routes: FastifyPluginAsync = async (app) => {
         reply.code(404);
         return { ok: false, reason: "scene has no stored clip" };
       }
-      const size = statSync(fullPath).size;
-      reply.header("Accept-Ranges", "bytes");
-      const range = parseByteRange(request.headers.range, size);
-      if (range === "unsatisfiable") {
-        reply.code(416).header("Content-Range", `bytes */${size}`);
-        return reply.send();
-      }
-      reply.type("video/mp4");
-      if (!range) {
-        reply.header("Content-Length", size);
-        return reply.send(createReadStream(fullPath));
-      }
-      reply.code(206).header("Content-Range", `bytes ${range.start}-${range.end}/${size}`).header("Content-Length", range.end - range.start + 1);
-      return reply.send(createReadStream(fullPath, range));
+      return sendFileWithRanges(reply, fullPath, "video/mp4", request.headers.range);
     },
   );
+
+  // redo-scene-narration (JOS-282), design Decision 9 — read consecutive scenes' narration again, review, keep or discard.
+  const takeRangeSchema = z.object({ firstSceneId: z.string().uuid(), lastSceneId: z.string().uuid() });
+  const takeParamsSchema = z.object({ sessionId: sessionIdSchema, takeId: z.string().regex(ulidPattern, "invalid take identifier") });
+  const takeRefusalSchema = z.object({ ok: z.boolean(), reason: z.string(), limit: z.number().int().optional() });
+  const refuseTake = (reply: FastifyReply, reason: TakeCreateRefusal | TakeDecisionRefusal) => {
+    reply.code(reason === "unknown-scene" || reason === "unknown-take" ? 404 : reason === "invalid-range" || reason === "too-long" ? 422 : 409);
+    return { ok: false, reason, ...(reason === "too-long" ? { limit: MAX_TAKE_CHARACTERS } : {}) };
+  };
+
+  typed.get(
+    "/sessions/:sessionId/narration-takes/quote",
+    {
+      schema: {
+        description:
+          "redo-scene-narration (JOS-282): what reading scenes firstSceneId to lastSceneId again would send and cost. No side effects, and no provider call. " +
+          "Refusals: 404 unknown-scene; 422 invalid-range (last before first) or too-long (more than `limit` characters); 409 narration-not-located.",
+        params: sessionParamsSchema,
+        querystring: takeRangeSchema,
+        response: {
+          200: z.object({
+            text: z.string().describe("The script's characters that would be read again, exactly as stored. The only answer that carries script text."),
+            characters: z.number().int(),
+            estimatedCost: z.object({ amount: z.number(), currency: z.string() }).nullable().describe("Characters times the bound voice provider's price; null when it has no price."),
+            pauseEditsReset: z.array(z.number().int()).describe("Indexes of the selected scenes whose pause edits keeping the take would remove."),
+            limit: z.number().int().describe("The most characters one take may read again."),
+          }),
+          404: takeRefusalSchema,
+          409: takeRefusalSchema,
+          422: takeRefusalSchema,
+        },
+      },
+    },
+    async (request, reply) => {
+      const result = quoteNarrationTake(request.params.sessionId, request.query.firstSceneId, request.query.lastSceneId);
+      if (!result.ok) return refuseTake(reply, result.reason);
+      return { ...result.quote, limit: MAX_TAKE_CHARACTERS };
+    },
+  );
+
+  typed.post(
+    "/sessions/:sessionId/narration-takes",
+    {
+      schema: {
+        description:
+          "redo-scene-narration (JOS-282): records a take and sends the quoted text once to the session's voice provider; 202, the work happens after the answer. " +
+          "Refusals as the quote, plus 409 take-in-progress and assembly-in-progress.",
+        params: sessionParamsSchema,
+        body: takeRangeSchema,
+        response: { 202: z.object({ ok: z.boolean(), takeId: z.string() }), 404: takeRefusalSchema, 409: takeRefusalSchema, 422: takeRefusalSchema },
+      },
+    },
+    async (request, reply) => {
+      const result = createNarrationTake(request.params.sessionId, request.body.firstSceneId, request.body.lastSceneId);
+      if (!result.ok) return refuseTake(reply, result.reason);
+      reply.code(202);
+      return result;
+    },
+  );
+
+  typed.get(
+    "/sessions/:sessionId/narration-takes/:takeId/preview",
+    {
+      config: {
+        swaggerTransform: (input: Parameters<typeof jsonSchemaTransform>[0]) => {
+          const out = binaryFileSwaggerTransform("audio/mp4", "The take's preview (AAC in MP4), inline, with Accept-Ranges: bytes")(input);
+          const response = out.schema.response;
+          response["206"] = { description: "The requested byte range, with Content-Range", content: { "audio/mp4": { schema: { type: "string", format: "binary" } } } };
+          response["416"] = { description: "The range starts at or past the end of the file; Content-Range: bytes */size" };
+          return out;
+        },
+      },
+      schema: {
+        description:
+          "redo-scene-narration (JOS-282): the narration from 3 s before the take's section to 3 s after it, while the take waits for review. Byte ranges as the scene clip.",
+        params: takeParamsSchema,
+        response: { 200: z.any(), 206: z.any(), 404: conflictSchema, 416: z.any() },
+      },
+    },
+    async (request, reply) => {
+      const run = getRun(request.params.sessionId);
+      const take = run ? getNarrationTake(run.id, request.params.takeId) : undefined;
+      if (!run || !take || take.state !== "ready" || !take.previewPath) {
+        reply.code(404);
+        return { ok: false, reason: "take has no preview" };
+      }
+      return sendFileWithRanges(reply, resolveArtefactPath(run.projectFolder, take.previewPath), "audio/mp4", request.headers.range);
+    },
+  );
+
+  for (const decision of ["keep", "discard"] as const) {
+    typed.post(
+      `/sessions/:sessionId/narration-takes/:takeId/${decision}`,
+      {
+        schema: {
+          description:
+            decision === "keep"
+              ? "redo-scene-narration (JOS-282): makes a take waiting for review the current narration, removes its scenes' pause edits, and rebuilds the final video. " +
+                "Refusals: 404 unknown-take; 409 take-not-open, take-not-ready, assembly-in-progress."
+              : "redo-scene-narration (JOS-282): discards a take waiting for review or failed; nothing else changes. Refusals: 404 unknown-take; 409 take-not-open, take-not-ready.",
+          params: takeParamsSchema,
+          response: { 200: okSchema, 404: takeRefusalSchema, 409: takeRefusalSchema },
+        },
+      },
+      async (request, reply) => {
+        const decide = decision === "keep" ? keepNarrationTake : discardNarrationTake;
+        const result = decide(request.params.sessionId, request.params.takeId);
+        if (!result.ok) return refuseTake(reply, result.reason);
+        return { ok: true };
+      },
+    );
+  }
 
   // PRD §12.3 — the final MP4 is only available at `final-video`.
   typed.get(

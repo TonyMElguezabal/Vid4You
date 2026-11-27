@@ -94,6 +94,14 @@ describe("buildMuxArguments", () => {
     expect(args).not.toContain("copy");
   });
 
+  it("encodes a spliced narration once, even with no edits (redo-scene-narration, JOS-282, design Decision 4)", () => {
+    const args = buildMuxArguments({ ...base, voiceOverPath: "/p/narration-take-1.flac", encodeNarration: true, audio: MONO_44K });
+
+    expect(args[args.indexOf("-filter_complex") + 1]).toContain("[2:a]atrim=start=0");
+    expect(args.slice(args.indexOf("-c:a"), args.indexOf("-c:a") + 4)).toEqual(["-c:a", "aac", "-b:a", "192k"]);
+    expect(args).not.toContain("copy");
+  });
+
   it("needs the narration's audio shape when there are edits", () => {
     expect(() => buildMuxArguments({ ...base, narrationEdits: [{ atSeconds: 10, deltaSeconds: -1 }] })).toThrow(/audio/i);
   });
@@ -184,6 +192,22 @@ describe.skipIf(!haveFfmpeg)("the ffmpeg adapter with narration edits (real ffmp
       expect(audio).toBeCloseTo(13.8, 2);
       expect(frames).toBe(Math.round(13.8 * FPS));
       expect(Math.abs(frames / FPS - audio)).toBeLessThanOrEqual(1 / FPS);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it("encodes a spliced FLAC narration once, and measures it against the video (redo-scene-narration, JOS-282)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "vid4you-narration-edit-test-"));
+    try {
+      const flac = join(dir, "narration-take-1.flac");
+      execFileSync(FFMPEG, ["-v", "error", "-y", "-i", join(FIXTURE, "voice-over.m4a"), "-c:a", "flac", "-sample_fmt", "s16", flac]);
+      const out = join(dir, "spliced.mp4");
+      const result = await createFfmpegAssemblyTool().assemble({ ...inputFor(originalEnds, out), voiceOverPath: flac, encodeNarration: true });
+
+      expect(result.kind).toBe("success");
+      expect(probe(out, "stream=codec_name", "a:0")).toBe("aac");
+      expect(Number(probe(out, "stream=duration", "a:0"))).toBeCloseTo(14.4, 1);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

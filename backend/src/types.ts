@@ -165,6 +165,64 @@ export interface NarrationTimestampsInput {
 
 export type NarrationTimestamps = NarrationTimestampsInput;
 
+/** redo-scene-narration (JOS-282), design Decision 8 — where a narration take stands. Only generating and ready are open. */
+export type NarrationTakeState = "generating" | "ready" | "kept" | "discarded" | "failed";
+
+/** How the provider call of a take ended; null while it was not sent or has not answered. */
+export type NarrationTakeProviderOutcome = "success" | "transient" | "not-retryable" | "timed-out";
+
+/** The files a fitted take wrote, relative to the project folder. */
+export interface NarrationTakeFiles {
+  takeAudioPath: string;
+  takeTimestampsPath: string;
+  narrationPath: string;
+  narrationTimestampsPath: string;
+  previewPath: string;
+}
+
+export interface NarrationTake {
+  id: string;
+  runId: string;
+  /** 1, 2, … per session, in request order; carried by the take's file names. */
+  number: number;
+  /** The narration version the take was built on (1 = the original voice-over). */
+  baseVersion: number;
+  firstSceneId: string;
+  lastSceneId: string;
+  /** Characters sent to the provider: the billed units of a successful call. */
+  textLength: number;
+  providerId: string;
+  state: NarrationTakeState;
+  providerOutcome: NarrationTakeProviderOutcome | null;
+  providerRequestId: string | null;
+  /** The cause the User reads, for a failed take. */
+  failure: string | null;
+  takeAudioPath: string | null;
+  takeTimestampsPath: string | null;
+  narrationPath: string | null;
+  narrationTimestampsPath: string | null;
+  previewPath: string | null;
+  requestedAt: string;
+  sentAt: string | null;
+  finishedAt: string | null;
+  decidedAt: string | null;
+}
+
+/** redo-scene-narration (JOS-282), design Decision 2 — the narration the assembly, pauses and subtitles read. */
+export interface CurrentNarration {
+  /** 1 for the original voice-over, one more for each kept take. */
+  version: number;
+  /** The kept take this narration comes from; null for the original. */
+  takeId: string | null;
+  audioPath: string;
+  /** The stored-file timestamps (`{ mechanism, characters }`); null when the session has none yet. */
+  timestampsPath: string | null;
+  mechanism: TimestampMechanism | null;
+  durationSeconds: number;
+  /** True for a kept take's narration (FLAC), which the mux encodes once instead of copying (design Decision 4). */
+  spliced: boolean;
+}
+
 /** `scheduled`: an automatic retry that is persisted with its due time and not yet sent (bounded-retry-policy, Decision 9). */
 /**
  * stage-execution-time-limit (JOS-185): `timed-out` is a sent attempt that outlasted its stage's maximum time; its
@@ -371,6 +429,23 @@ export interface SessionEventPayload {
   finalVideoUrl?: string;
   /** adjust-scene-pause (JOS-190), Decision 9 — present once a final video exists. Derived on every read. */
   finalVideo?: FinalVideoStatus;
+  /** redo-scene-narration (JOS-282), design Decision 10 — present once the narration exists. Derived on every read. */
+  narration?: NarrationView;
+}
+
+/** The session's narration version, and its latest take while generating, waiting for review, or failed and not dismissed. */
+export interface NarrationView {
+  version: number;
+  take?: {
+    takeId: string;
+    state: "generating" | "ready" | "failed";
+    firstSceneIndex: number;
+    lastSceneIndex: number;
+    /** Present while the take waits for review. */
+    previewUrl?: string;
+    /** Present when the take failed: a cause written for a person. */
+    failure?: string;
+  };
 }
 
 /** The current final video's place in its history, and what a rebuild would change. */
@@ -446,6 +521,10 @@ export interface SceneEventPayload {
   held?: boolean; // true only while the session is paused and this scene has pending work
   /** adjust-scene-pause (JOS-190): present only once the session has a final video and this scene's pause can be derived. */
   pause?: ScenePauseView;
+  /** redo-scene-narration (JOS-282), design Decision 10 — true when a kept take covers this scene. */
+  narrationRedone?: boolean;
+  /** True when this scene's narration is located in the current timestamps, so it can be read again. */
+  narrationRedoable?: boolean;
   updatedAt: string;
 }
 

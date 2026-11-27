@@ -72,6 +72,8 @@ export function buildMuxArguments(input: {
   voiceOverPath: string;
   outputPath: string;
   narrationEdits?: readonly NarrationEdit[];
+  /** Encode the narration once even with no edits (a spliced narration, redo-scene-narration, JOS-282). */
+  encodeNarration?: boolean;
   audio?: AudioShape;
   /**
    * Draw `subtitles.ass` with the font in `fonts/` over the concatenated video (add-burned-in-subtitles, JOS-237,
@@ -80,12 +82,12 @@ export function buildMuxArguments(input: {
    */
   burnSubtitles?: boolean;
 }): string[] {
-  const { videoInputPaths, voiceOverPath, outputPath, narrationEdits, audio, burnSubtitles } = input;
+  const { videoInputPaths, voiceOverPath, outputPath, narrationEdits, encodeNarration, audio, burnSubtitles } = input;
   const voiceIndex = videoInputPaths.length;
   const concat = `${videoInputPaths.map((_, index) => `[${index}:v]`).join("")}concat=n=${videoInputPaths.length}:v=1:a=0`;
   const videoGraph = burnSubtitles ? `${concat}[cat];[cat]subtitles=subtitles.ass:fontsdir=fonts[outv]` : `${concat}[outv]`;
   const inputs = [...videoInputPaths.flatMap((path) => ["-i", path]), "-i", voiceOverPath];
-  const edited = narrationEdits !== undefined && narrationEdits.some((edit) => edit.deltaSeconds !== 0);
+  const edited = encodeNarration === true || (narrationEdits !== undefined && narrationEdits.some((edit) => edit.deltaSeconds !== 0));
 
   if (!edited) {
     return [
@@ -103,7 +105,7 @@ export function buildMuxArguments(input: {
   return [
     "-y", "-hide_banner", "-loglevel", "error",
     ...inputs,
-    "-filter_complex", `${videoGraph};${buildNarrationFilter(narrationEdits, voiceIndex, audio)}`,
+    "-filter_complex", `${videoGraph};${buildNarrationFilter(narrationEdits ?? [], voiceIndex, audio)}`,
     "-map", "[outv]",
     "-map", "[outa]",
     "-c:v", "libx264", "-pix_fmt", "yuv420p",
@@ -176,7 +178,7 @@ export function createFfmpegAssemblyTool(options: FfmpegAssemblyOptions = {}): A
 
       const work = mkdtempSync(join(tmpdir(), "vid4you-assembly-"));
       try {
-        const { clips, voiceOverPath, outputPath, fps, width, height, narrationEdits } = input;
+        const { clips, voiceOverPath, outputPath, fps, width, height, narrationEdits, encodeNarration } = input;
         const normalised: string[] = [];
 
         // Stage 1 — retime + normalise each clip (ADR 0005, Decisions 1-4).
@@ -202,7 +204,7 @@ export function createFfmpegAssemblyTool(options: FfmpegAssemblyOptions = {}): A
 
         // Stage 2 — concat all normalised clips + the narration (copied, or edited and encoded once). With subtitles,
         // the ASS file and a copy of the font sit in `work` and ffmpeg runs inside it (design Decision 4).
-        const edited = narrationEdits !== undefined && narrationEdits.some((edit) => edit.deltaSeconds !== 0);
+        const edited = encodeNarration === true || (narrationEdits !== undefined && narrationEdits.some((edit) => edit.deltaSeconds !== 0));
         if (subtitles) {
           writeFileSync(join(work, "subtitles.ass"), renderAss(subtitles));
           mkdirSync(join(work, "fonts"));
@@ -215,7 +217,7 @@ export function createFfmpegAssemblyTool(options: FfmpegAssemblyOptions = {}): A
             // Absolute: with subtitles ffmpeg runs inside `work`, where a relative path (the default PROJECTS_ROOT) points nowhere.
             voiceOverPath: resolve(voiceOverPath),
             outputPath: resolve(outputPath),
-            ...(edited ? { narrationEdits, audio: probeAudioShape(voiceOverPath) } : {}),
+            ...(edited ? { narrationEdits: narrationEdits ?? [], encodeNarration: true, audio: probeAudioShape(voiceOverPath) } : {}),
             ...(subtitles ? { burnSubtitles: true } : {}),
           }),
           subtitles ? { cwd: work } : {},

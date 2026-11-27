@@ -33,7 +33,7 @@ export interface PauseScene {
  * Locates `fragment` in `script` at or after `from`, comparing only non-whitespace characters (whitespace is the only
  * difference registration allows between the joined prompts and the script, §4.2). Returns the span's UTF-16 offsets.
  */
-function locateFragment(script: string, fragment: string, from: number): { start: number; end: number } | null {
+export function locateFragment(script: string, fragment: string, from: number): { start: number; end: number } | null {
   const wanted = [...fragment].filter((character) => !isWhitespace(character));
   if (wanted.length === 0) return null;
   const characters = [...script];
