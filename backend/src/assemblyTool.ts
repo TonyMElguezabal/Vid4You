@@ -1,6 +1,7 @@
 // assemble-final-video (JOS-149) — the assembly tool port (design.md Decision 3).
 // Uses ffmpeg per ADR 0005; the port decouples the phase from the concrete adapter.
 
+import type { AssemblyProgress } from "./assemblyProgress.ts";
 import type { SubtitleCue } from "./subtitles.ts";
 
 /**
@@ -33,6 +34,8 @@ export interface NarrationEdit {
 
 /** Inputs required to assemble one final video. */
 export interface AssemblyInput {
+  /** final-video-build-progress — called as the attempt moves on; absent: nothing is reported. */
+  onProgress?: (progress: AssemblyProgress) => void;
   /** Clips in ascending scene order. Must be non-empty. */
   clips: AssemblyClip[];
   /** Absolute path to the voice-over MP3/AAC file; muxed as-is, never re-encoded. */

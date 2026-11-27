@@ -175,7 +175,8 @@ Fixed here as a documented convention, not left to per-story judgement (`docs/ad
 | A scene's stage diagnostics (JOS-166) | `Scene {index} image diagnostics` / `Scene {index} clip diagnostics` (`role="group"` with an `aria-label`; the text is `Image: Fal.ai (fal-ai/flux/dev), 2 attempts`) | `Scene 7 image diagnostics` |
 | A phase's stage list (JOS-166) | `{Phase} stages` (`aria-label` on the `<ul>`; rendered only when a stage has run) | `Decomposition stages` |
 | Per-scene downloads | `Download scene {index} image` / `Download scene {index} video` | `Download scene 7 image` |
-| The final video download | `Download final video` (always the current version, including while a rebuild runs) | — |
+| The final video download | `Download final video` (always the current version; a disabled button while a new version is built, with the note "The download is available again when the new version is ready.", final-video-build-progress) | — |
+| The final video build's progress (final-video-build-progress) | `Final video progress` (a native `<progress max=100>`, present only while the session is `final-video-generating`; no `value` before the first report, so it shows as indeterminate). Its line is `Waiting to start`, `Preparing clips: {done} of {total}` or `Encoding the final video`, then the percentage | `Preparing clips: 23 of 70` |
 | The pause dial (JOS-190) | `Pause after scene {index}` (a number field in the expanded card, present only when the read carries `pause`) / `Reset scene {index} pause` | `Pause after scene 3` |
 | Rebuild the final video (JOS-190) | `Rebuild final video` (present only while pause edits are pending and no rebuild runs) | — |
 | Session control | `Pause session` / `Continue session` | — |

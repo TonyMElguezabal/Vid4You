@@ -184,7 +184,7 @@ describe("Rebuild final video after a rebuilt scene", () => {
   });
 
   it("is not offered while a version is being built", () => {
-    render(<FinalVideoDownload url="/final" finalVideo={finalVideo} rebuilding onRebuild={noop} />);
+    render(<FinalVideoDownload url="/final" finalVideo={finalVideo} building onRebuild={noop} />);
 
     expect(screen.queryByRole("button", { name: "Rebuild final video" })).not.toBeInTheDocument();
   });

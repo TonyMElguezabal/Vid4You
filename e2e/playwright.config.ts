@@ -28,6 +28,10 @@ export default defineConfig({
       reuseExistingServer: false,
       env: {
         ...ALL_STUBS_SUCCEEDING,
+        // final-video-build-progress, design Decision 3 — every assembly reports its progress over 2 s, so a test can see
+        // the bar. A screenshot run can lengthen it.
+        USE_STUB_ASSEMBLY_TOOL: "slow-success",
+        ASSEMBLY_STUB_DELAY_MS: process.env.ASSEMBLY_STUB_DELAY_MS ?? "2000",
         NODE_ENV: "development",
         PORT: String(BACKEND_PORT),
         DB_PATH: join(scratch, "db.sqlite"),

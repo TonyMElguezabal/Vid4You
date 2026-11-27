@@ -12,10 +12,12 @@
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { promisify } from "node:util";
 import { FFMPEG, FFPROBE, ffmpegHasSubtitleFilter } from "./config/ffmpeg.ts";
 import { resolveSubtitleFontPath } from "./config/subtitleFont.ts";
 import type { AssemblyInput, AssemblyResult, AssemblyTool, NarrationEdit } from "./assemblyTool.ts";
+import { createAssemblyProgress } from "./assemblyProgress.ts";
 import { renderAss } from "./subtitles.ts";
 
 
@@ -114,23 +116,52 @@ export function buildMuxArguments(input: {
   ];
 }
 
-function probeVideoDuration(path: string): number {
-  const out = execFileSync(FFPROBE, [
-    "-v", "error",
-    "-show_entries", "format=duration",
-    "-of", "csv=p=0",
-    path,
-  ], { encoding: "utf8" }).trim();
-  return parseFloat(out);
+// final-video-build-progress, design Decision 1 — every ffmpeg and ffprobe call is an asynchronous child process. A
+// synchronous one blocked the whole backend for the length of an assembly (minutes): no request was answered and no
+// live update was sent.
+const execFileAsync = promisify(execFile);
+
+async function ffprobe(args: string[]): Promise<string> {
+  const { stdout } = await execFileAsync(FFPROBE, args, { encoding: "utf8" });
+  return stdout.trim();
 }
 
-function probeAudioShape(path: string): AudioShape {
-  const out = execFileSync(FFPROBE, [
-    "-v", "error", "-select_streams", "a:0",
-    "-show_entries", "stream=sample_rate,channels",
-    "-of", "csv=p=0",
-    path,
-  ], { encoding: "utf8" }).trim();
+/**
+ * Runs ffmpeg with `-progress pipe:1`, passing each reported `frame=` to `onFrame`. Rejects on a non-zero exit with
+ * ffmpeg's error output in the message, as `execFileSync` did, so callers treat a failure exactly as before.
+ */
+export function runFfmpeg(args: readonly string[], options: { cwd?: string; onFrame?: (frame: number) => void } = {}): Promise<void> {
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn(FFMPEG, ["-nostats", "-progress", "pipe:1", ...args], { cwd: options.cwd, stdio: ["ignore", "pipe", "pipe"] });
+    let stderr = "";
+    let pending = "";
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      const lines = (pending + chunk).split("\n");
+      pending = lines.pop() ?? "";
+      for (const line of lines) {
+        const match = /^frame=(\d+)/.exec(line.trim());
+        if (match) options.onFrame?.(Number(match[1]));
+      }
+    });
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk: string) => {
+      stderr = (stderr + chunk).slice(-8192); // with -loglevel error this is short; keep only the tail regardless
+    });
+    child.on("error", reject);
+    child.on("close", (code, signal) => {
+      if (code === 0) resolvePromise();
+      else reject(new Error(`ffmpeg exited with ${code ?? signal}: ${stderr.trim()}`));
+    });
+  });
+}
+
+async function probeVideoDuration(path: string): Promise<number> {
+  return parseFloat(await ffprobe(["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path]));
+}
+
+async function probeAudioShape(path: string): Promise<AudioShape> {
+  const out = await ffprobe(["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=sample_rate,channels", "-of", "csv=p=0", path]);
   const [rate, channels] = out.split(",");
   const sampleRate = Number(rate);
   const layout = channels === "1" ? "mono" : channels === "2" ? "stereo" : null;
@@ -140,14 +171,8 @@ function probeAudioShape(path: string): AudioShape {
   return { sampleRate, channelLayout: layout };
 }
 
-function probeAudioStreamDuration(path: string): number {
-  const out = execFileSync(FFPROBE, [
-    "-v", "error", "-select_streams", "a:0",
-    "-show_entries", "stream=duration",
-    "-of", "csv=p=0",
-    path,
-  ], { encoding: "utf8" }).trim();
-  return parseFloat(out);
+async function probeAudioStreamDuration(path: string): Promise<number> {
+  return parseFloat(await ffprobe(["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=duration", "-of", "csv=p=0", path]));
 }
 
 /** What the adapter reads from its surroundings; tests replace both (add-burned-in-subtitles, JOS-237). */
@@ -159,7 +184,6 @@ export interface FfmpegAssemblyOptions {
 export function createFfmpegAssemblyTool(options: FfmpegAssemblyOptions = {}): AssemblyTool {
   const { subtitleFontPath = resolveSubtitleFontPath(), ffmpegHasSubtitleFilter: hasSubtitleFilter = ffmpegHasSubtitleFilter } = options;
   return {
-    // eslint-disable-next-line @typescript-eslint/require-await -- implements the async AssemblyTool contract
     async assemble(input: AssemblyInput): Promise<AssemblyResult> {
       // add-burned-in-subtitles (JOS-237), design Decisions 3 and 5 — a video that should have subtitles is never
       // delivered without them. None of these causes carries the script's text.
@@ -180,16 +204,21 @@ export function createFfmpegAssemblyTool(options: FfmpegAssemblyOptions = {}): A
       try {
         const { clips, voiceOverPath, outputPath, fps, width, height, narrationEdits, encodeNarration } = input;
         const normalised: string[] = [];
+        const progress = createAssemblyProgress(
+          clips.map((clip) => clip.frameCount),
+          (report) => input.onProgress?.(report),
+        );
 
         // Stage 1 — retime + normalise each clip (ADR 0005, Decisions 1-4).
         for (let i = 0; i < clips.length; i++) {
           const clip = clips[i]!;
-          const srcDur = probeVideoDuration(clip.clipPath);
+          progress.clipStarted(i);
+          const srcDur = await probeVideoDuration(clip.clipPath);
           const renderDur = clip.frameCount / fps;
           const setptsMultiplier = renderDur / srcDur;
           const outPath = join(work, `scene-${i}-normalized.mp4`);
 
-          execFileSync(FFMPEG, [
+          await runFfmpeg([
             "-y", "-hide_banner", "-loglevel", "error",
             "-i", clip.clipPath,
             "-map", "0:v:0",
@@ -197,9 +226,10 @@ export function createFfmpegAssemblyTool(options: FfmpegAssemblyOptions = {}): A
             "-frames:v", String(clip.frameCount),
             "-c:v", "libx264", "-pix_fmt", "yuv420p",
             outPath,
-          ]);
+          ], { onFrame: (frame) => progress.frames(frame) });
 
           normalised.push(outPath);
+          progress.clipFinished(i);
         }
 
         // Stage 2 — concat all normalised clips + the narration (copied, or edited and encoded once). With subtitles,
@@ -210,23 +240,24 @@ export function createFfmpegAssemblyTool(options: FfmpegAssemblyOptions = {}): A
           mkdirSync(join(work, "fonts"));
           copyFileSync(subtitleFontPath, join(work, "fonts", basename(subtitleFontPath)));
         }
-        execFileSync(
-          FFMPEG,
+        progress.encodingStarted();
+        const audio = edited ? await probeAudioShape(voiceOverPath) : undefined;
+        await runFfmpeg(
           buildMuxArguments({
             videoInputPaths: normalised,
             // Absolute: with subtitles ffmpeg runs inside `work`, where a relative path (the default PROJECTS_ROOT) points nowhere.
             voiceOverPath: resolve(voiceOverPath),
             outputPath: resolve(outputPath),
-            ...(edited ? { narrationEdits: narrationEdits ?? [], encodeNarration: true, audio: probeAudioShape(voiceOverPath) } : {}),
+            ...(edited ? { narrationEdits: narrationEdits ?? [], encodeNarration: true, audio } : {}),
             ...(subtitles ? { burnSubtitles: true } : {}),
           }),
-          subtitles ? { cwd: work } : {},
+          { ...(subtitles ? { cwd: work } : {}), onFrame: (frame) => progress.frames(frame) },
         );
 
         // Stage 3 — only for an edited narration: measure, never assume (ADR 0005's methodological note).
         if (edited) {
           const videoSeconds = clips.reduce((sum, clip) => sum + clip.frameCount, 0) / fps;
-          const audioSeconds = probeAudioStreamDuration(outputPath);
+          const audioSeconds = await probeAudioStreamDuration(outputPath);
           if (!Number.isFinite(audioSeconds) || Math.abs(audioSeconds - videoSeconds) > 1 / fps) {
             return {
               kind: "failed_transient",
@@ -238,7 +269,7 @@ export function createFfmpegAssemblyTool(options: FfmpegAssemblyOptions = {}): A
         return { kind: "success", outputPath };
       } catch (err: unknown) {
         const reason = err instanceof Error ? err.message : String(err);
-        // execFileSync throws for non-zero exit; treat all ffmpeg failures as
+        // runFfmpeg rejects on a non-zero exit; treat all ffmpeg failures as
         // transient by default — a missing file is not-retryable, but
         // distinguishing those here is fragile. The retry policy handles budget.
         return { kind: "failed_transient", reason };
