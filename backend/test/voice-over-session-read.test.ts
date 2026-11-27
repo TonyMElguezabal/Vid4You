@@ -125,15 +125,19 @@ describe("No download of the MP3 (6.4)", () => {
 
     // retry-voice-over (JOS-155): the retry route takes no input and serves nothing, so it is the one allowed name.
     // redo-scene-narration (JOS-282): a take's preview is a short AAC review excerpt of a take, never the stored MP3.
+    // listen-to-voice-over, design Decision 6: the Voice-over player's inline route is the one playback exception.
     const routes = app
       .printRoutes({ commonPrefix: false })
       .split("\n")
-      .filter((line) => !line.includes("voice-over/retry") && !line.includes("narration-takes"))
+      .filter((line) => !line.includes("voice-over/retry") && !line.includes("narration-takes") && !/\/narration\/audio \(/.test(line))
       .join("\n");
     expect(routes).not.toMatch(/voice|narration|audio|mp3/i);
     for (const path of ["voice-over", "voice-over.mp3", "narration", "audio"]) {
       const res = await app.inject({ method: "GET", url: `/sessions/${sessionId}/${path}` });
       expect(res.statusCode).toBe(404);
     }
+    const played = await app.inject({ method: "GET", url: `/sessions/${sessionId}/narration/audio` });
+    expect(played.statusCode).toBe(200);
+    expect(played.headers["content-disposition"]).toBeUndefined();
   });
 });

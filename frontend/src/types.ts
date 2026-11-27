@@ -432,6 +432,8 @@ export interface EstimatedCostReport {
 /** redo-scene-narration (JOS-282), design Decision 10 — the session's narration version and its open take. */
 export interface NarrationView {
   version: number;
+  /** listen-to-voice-over — the current narration, inline, with byte ranges; a new version gives a new URL. */
+  audioUrl: string;
   take?: {
     takeId: string;
     state: "generating" | "ready" | "failed";

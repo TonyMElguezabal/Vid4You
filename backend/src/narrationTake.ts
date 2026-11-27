@@ -147,7 +147,7 @@ export function narrationReadModel(runId: string): { narration?: NarrationView; 
   }
   const latest = takes.at(-1);
   const open = latest && (latest.state === "generating" || latest.state === "ready" || latest.state === "failed") ? latest : undefined;
-  const view: NarrationView = { version: narration.version };
+  const view: NarrationView = { version: narration.version, audioUrl: `/sessions/${runId}/narration/audio?v=${narration.version}` };
   if (open) {
     view.take = {
       takeId: open.id,

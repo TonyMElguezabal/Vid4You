@@ -498,7 +498,7 @@ describe("more take paths (task 3.5)", () => {
     expect(discardNarrationTake(runId, created.takeId)).toEqual({ ok: false, reason: "take-not-ready" });
     expect(keepNarrationTake(runId, created.takeId)).toEqual({ ok: false, reason: "take-not-ready" });
     expect(discardNarrationTake(runId, "no-such-take")).toEqual({ ok: false, reason: "unknown-take" });
-    expect(narrationReadModel(runId).narration).toEqual({ version: 1, take: { takeId: created.takeId, state: "generating", firstSceneIndex: 1, lastSceneIndex: 1 } });
+    expect(narrationReadModel(runId).narration).toEqual({ version: 1, audioUrl: `/sessions/${runId}/narration/audio?v=1`, take: { takeId: created.takeId, state: "generating", firstSceneIndex: 1, lastSceneIndex: 1 } });
     stub.release();
     await waitFor(settled(runId));
     expect(narrationReadModel(runId).narration?.take).toMatchObject({ state: "failed", failure: "The voice provider gives no character timestamps, which a redo needs." });
