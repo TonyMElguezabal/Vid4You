@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
+import type { AssemblyProgress } from "./assemblyProgress.ts";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -57,7 +58,6 @@ import {
   recordStageAttempt,
   replaceFinalVideoPath,
   resetAttemptsForVideoStart,
-  requestFinalVideoRebuild,
   resolveArtefactPath,
   sceneFileStem,
   sceneCurrentRequestId,
@@ -410,6 +410,27 @@ function finalVideoStatus(runId: string, finalVideoPath: string, staleScenes: bo
   return status;
 }
 
+// final-video-build-progress, design Decision 4 — the latest progress of each session's running assembly attempt, and
+// when it was last broadcast. In memory only: it means nothing once the process that runs the attempt is gone.
+const assemblyProgressByRun = new Map<string, AssemblyProgress>();
+const assemblyProgressBroadcastAt = new Map<string, number>();
+const ASSEMBLY_PROGRESS_BROADCAST_MS = 1_000;
+
+function reportAssemblyProgress(runId: string, progress: AssemblyProgress): void {
+  const previous = assemblyProgressByRun.get(runId);
+  assemblyProgressByRun.set(runId, progress);
+  const now = Date.now();
+  const stepChanged = previous?.step !== progress.step;
+  if (!stepChanged && now - (assemblyProgressBroadcastAt.get(runId) ?? -Infinity) < ASSEMBLY_PROGRESS_BROADCAST_MS) return;
+  assemblyProgressBroadcastAt.set(runId, now);
+  broadcast(runId);
+}
+
+function clearAssemblyProgress(runId: string): void {
+  assemblyProgressByRun.delete(runId);
+  assemblyProgressBroadcastAt.delete(runId);
+}
+
 export function toSnapshot(runId: string): SessionSnapshot | undefined {
   const run = getRun(runId);
   if (!run) return undefined;
@@ -462,6 +483,8 @@ export function toSnapshot(runId: string): SessionSnapshot | undefined {
   // redo-scene-narration (JOS-282), design Decision 10.
   const narration = narrationReadModel(runId);
   if (narration.narration) session.narration = narration.narration;
+  const assemblyProgress = assemblyProgressByRun.get(runId);
+  if (assemblyProgress) session.assemblyProgress = assemblyProgress;
   // adjust-scene-pause (JOS-190), Decision 9 — each scene's dial, only once there is a final video to rebuild.
   const pauseViews = run.finalVideoPath != null ? scenePauseViews(runId) : new Map<string, ScenePauseView>();
   return {
@@ -727,9 +750,13 @@ async function runAssemblyAttempt(runId: string, attemptNumber: number): Promise
       ...(narrationEdits.length > 0 ? { narrationEdits } : {}),
       ...(narration.spliced ? { encodeNarration: true } : {}),
       subtitles,
+      onProgress: (progress) => reportAssemblyProgress(runId, progress),
     });
   } catch (err: unknown) {
     result = { kind: "failed_transient" as const, reason: err instanceof Error ? err.message : String(err) };
+  } finally {
+    // Every outcome below broadcasts; the read then carries no progress (spec "The session read carries the assembly progress").
+    clearAssemblyProgress(runId);
   }
 
   const finishedAt = new Date().toISOString();
@@ -809,23 +836,12 @@ function triggerAssemblyIfReady(runId: string): void {
   const scenes = getScenesForRun(runId);
   const gate = assemblyGate(scenes);
   if (!gate.open) return;
-  // rebuild-scene (JOS-235), Decision 6 — a session whose final video predates a rebuilt scene gets a new version, the
-  // JOS-190 rebuild: a fresh cycle, the stored pause edits, and the previous version kept until the new one succeeds.
-  // Any other session (first assembly, or one whose assembly failed) takes the normal path.
-  // A rebuild the User asked for (`rebuildFinalVideo` records it first) is already requested and just launches.
+  // redo-scene-narration (JOS-282), Decision 15 — a session with a final video is assembled again only when the User asked
+  // for it (`rebuildFinalVideo` records the request first). A rebuilt scene or a kept take only marks it stale, so the
+  // User checks every scene first. Any other session (first assembly, or one whose assembly failed) takes the normal path.
   const run = getRun(runId);
-  if (run?.finalVideoPath && run.finalVideoStale && !run.rebuildRequestedAt && !requestFinalVideoRebuild(runId)) return;
+  if (run?.finalVideoPath && !run.rebuildRequestedAt) return;
   launchAssemblyPhase(runId);
-}
-
-/**
- * redo-scene-narration (JOS-282), design Decision 7 — after a kept take, a final video that predates the narration is
- * rebuilt as after a scene rebuild: once every scene is complete, and held while the session is paused. A session with
- * no final video uses the current narration in its first assembly, which its own flow launches.
- */
-export function rebuildWhenReady(runId: string): void {
-  const run = getRun(runId);
-  if (run?.finalVideoPath && run.finalVideoStale) triggerAssemblyIfReady(runId);
 }
 
 /**
@@ -1251,9 +1267,8 @@ export const assemblyStageLauncher: StageLauncher = {
     const blockedByFailure = run?.failure?.phase === "assembly";
     // adjust-scene-pause (JOS-190), Decision 6 — a rebuild asked for while paused is held work like a first assembly.
     const rebuildPending = run?.finalVideoPath != null && run.rebuildRequestedAt != null;
-    // rebuild-scene (JOS-235), Decision 6 — a final video older than a rebuilt scene is rebuilt on continue.
-    const stale = run?.finalVideoPath != null && run.finalVideoStale && run.rebuildRequestedAt == null;
-    const count = run && (!run.finalVideoPath || rebuildPending || stale) && gate.open && !inFlight && !blockedByFailure ? 1 : 0;
+    // redo-scene-narration (JOS-282), Decision 15 — a stale final video is not held work: only the User's rebuild launches it.
+    const count = run && (!run.finalVideoPath || rebuildPending) && gate.open && !inFlight && !blockedByFailure ? 1 : 0;
     return { count, sceneIds: [] };
   },
   // Stricter than `heldWork` (restart-recovery, Decision 3): boot must not relaunch an assembly whose budget is spent

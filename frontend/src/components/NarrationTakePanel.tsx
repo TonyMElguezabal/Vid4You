@@ -67,7 +67,11 @@ export function NarrationTakePanel({ narration, handlers }: Props) {
       )}
       {take.state === "failed" && (
         <>
-          <p role="alert">{take.failure}</p>
+          {/* The cause alone read like an assembly failure under the final video; say what was not changed and what to do. */}
+          <p role="alert">
+            The new reading of {range} could not be used. {take.failure} The narration and the final video were not changed. Use Redo narration on
+            scene {take.firstSceneIndex} to read {take.firstSceneIndex === take.lastSceneIndex ? "it" : "them"} again.
+          </p>
           <button type="button" disabled={pending} onClick={() => void run(() => handlers.discard(take.takeId))}>
             Dismiss
           </button>

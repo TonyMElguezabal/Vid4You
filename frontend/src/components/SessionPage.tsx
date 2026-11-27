@@ -140,10 +140,12 @@ export function SessionPage({
               <FinalVideoDownload
                 url={session.finalVideoUrl ? resolveResultUrl(session.finalVideoUrl) : undefined}
                 finalVideo={session.finalVideo}
-                // A session that already has a final video and is generating one again is rebuilding (JOS-190, Decision 7).
-                rebuilding={session.state === "final-video-generating" && Boolean(session.finalVideoUrl)}
+                // final-video-build-progress — the first build, a retry or a rebuild; with a final video it is a rebuild (JOS-190, Decision 7).
+                building={session.state === "final-video-generating"}
+                progress={session.assemblyProgress}
                 // rebuild-scene (JOS-235), Decision 9 — offered only while every scene is complete; the backend refuses it otherwise.
                 onRebuild={scenes.length > 0 && scenes.every((scene) => scene.state === "chunk-complete") ? onRebuildFinalVideo : undefined}
+                takeOpen={session.narration?.take?.state === "generating" || session.narration?.take?.state === "ready"}
               />
             )}
           </PhaseSection>

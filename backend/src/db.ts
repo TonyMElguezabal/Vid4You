@@ -2212,6 +2212,11 @@ export function getNarrationTakes(runId: string): NarrationTake[] {
   return allRows<NarrationTakeRow>("SELECT * FROM narration_takes WHERE run_id = ? ORDER BY number ASC", runId).map(rowToNarrationTake);
 }
 
+/** redo-scene-narration (JOS-282) — a take is generating or waiting for review; at most one per run (partial unique index). */
+export function hasOpenNarrationTake(runId: string): boolean {
+  return getRow("SELECT 1 FROM narration_takes WHERE run_id = ? AND state IN ('generating', 'ready')", runId) !== undefined;
+}
+
 export function markNarrationTakeSent(takeId: string, sentAt: string): void {
   db.prepare("UPDATE narration_takes SET sent_at = ? WHERE id = ? AND state = 'generating'").run(sentAt, takeId);
 }

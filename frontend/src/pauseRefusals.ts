@@ -10,6 +10,8 @@ const PAUSE_REFUSAL_SENTENCES: Record<string, string> = {
   "nothing-to-rebuild": "There are no changes to rebuild.",
   // rebuild-scene (JOS-235)
   "scenes-not-complete": "A scene is still being generated. Try again when every scene is done.",
+  // redo-scene-narration (JOS-282), design Decision 15
+  "take-in-progress": "A new narration is waiting for review. Keep or discard it first.",
 };
 
 export function pauseRefusalSentence(reason: string, fallback = "The change could not be saved."): string {

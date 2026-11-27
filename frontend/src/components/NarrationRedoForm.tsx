@@ -100,8 +100,8 @@ export function NarrationRedoForm({ offer }: { offer: NarrationRedoOffer }) {
         </>
       )}
       <p>
-        The voice provider reads this text again, and the reading is billed. You can listen to it before you keep it. Then the final video is
-        rebuilt.
+        The voice provider reads this text again, and the reading is billed. You can listen to it before you keep it. When you have checked the
+        scenes, rebuild the final video.
       </p>
       <div className="rebuild-actions">
         <button type="submit" className="primary" disabled={pending || !quote}>

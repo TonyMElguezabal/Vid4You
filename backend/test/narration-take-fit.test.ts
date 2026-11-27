@@ -161,6 +161,23 @@ describe("buildSpliceFilter", () => {
     expect(segmentSamples.reduce((sum, samples) => sum + samples, 0)).toBe(30 * 44100);
     expect(filter).toContain(`atrim=end_sample=${Math.round(9.95 * 44100)}`);
   });
+
+  // Task 2.6 — the 2026-11-27 take of scene 62, the session's last scene: its interval ends at the MP3's reported duration
+  // (725.237551 s, with encoder padding), 32 ms after the last decoded sample (31,981,568 samples, 725.2056 s).
+  it("ends a section that reaches the narration's end at the base's last decoded sample", () => {
+    const plan = planTakeFit({
+      narrationDurationSeconds: 725.205624,
+      previousSpeechEndSeconds: 710.9,
+      takeDurationSeconds: 13.421134,
+      scenes: [{ sceneId: "s62", index: 62, startSeconds: 711.111, endSeconds: 725.237551, basePauseSeconds: 0.7, takeSpeechStart: 0, takeSpeechEnd: 13.42 }],
+    });
+    if (!plan.ok) throw new Error("should fit");
+    const baseTotalSamples = 31_981_568;
+    const { filter, segmentSamples } = buildSpliceFilter(plan, { sampleRate: 44100, baseTotalSamples, gainDb: 0 });
+    expect(segmentSamples.reduce((sum, samples) => sum + samples, 0)).toBe(baseTotalSamples);
+    expect(segmentSamples.at(-1)).toBe(baseTotalSamples - Math.round(711.111 * 44100));
+    expect(filter).not.toContain("[post]");
+  });
 });
 
 describe("spliceTimestamps", () => {

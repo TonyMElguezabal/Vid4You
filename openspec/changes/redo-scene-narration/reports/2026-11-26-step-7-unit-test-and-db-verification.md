@@ -60,3 +60,22 @@ Application database `~/Library/Application Support/Vid4You/vid4you.sqlite`, rea
 ## Outcome
 - Step 7 status: PASS
 - Blocking issues: none
+
+## 7.3 Re-run after design Decision 15, 2026-11-27
+- Application database indicators before and after (sessions | voice_overs | narration_timestamps | migration, then the file hash): `8|8|8|28`, `98e737ffb89654bc` both times. Migration 28 was applied by the User's launch of the new build, not by the tests.
+- Backend: 3,168 passed, 11 skipped. Frontend: 550 passed. Typecheck clean; lint clean in the backend; the frontend shows the 7 warnings that predate this change (admin components), no errors.
+
+| Coverage | Backend baseline | Backend now | Frontend baseline | Frontend now |
+|---|---|---|---|---|
+| Statements | 95.90% | 96.16% | 97.57% | 97.58% |
+| Branches | 93.52% | 93.58% | 90.12% | 90.45% |
+| Functions | 97.37% | 97.44% | 89.10% | 90.03% |
+| Lines | 95.90% | 96.16% | 97.57% | 97.58% |
+
+- Coverage did not drop below the baseline. State restored: not needed. Step 7.3 status: PASS.
+
+## 2.6 A section that reaches the narration's end, 2026-11-27
+- Found by the User: two takes of scene 62 (the session's last scene) failed with "The new narration could not be built from the new reading." The provider had answered both (billed).
+- Replayed offline at no cost: a `.backup` copy of the database, a scratch project folder linking the real narration files, and a fake voice adapter answering with the saved `narration-take-3.mp3` and its timestamps. Real ffmpeg reported "the new narration has 31982976 samples instead of 31981568": scene 62's interval ends at 725.237551 s (the MP3's reported duration, with encoder padding), 1,408 samples (32 ms) after the last decoded sample.
+- Fix: `buildSpliceFilter` ends every part at or before the base's last decoded sample. New test in `test/narration-take-fit.test.ts` with the real numbers (failed first, then passed). The replay then gave a `ready` take whose FLAC has exactly 31,981,568 samples. The scratch copy was deleted afterwards; the application database and project folder were not written.
+- Backend suite: 3,169 passed, 11 skipped (the RunningHub live contract test failed once on the network and passed on its own). Typecheck and lint clean.

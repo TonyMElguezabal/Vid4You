@@ -2074,11 +2074,11 @@ describe("The Final video section's rebuild (JOS-190)", () => {
     expect(onRebuild).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps the download and says the new version is being built while a rebuild runs", () => {
-    render(<FinalVideoDownload url="/x" finalVideo={{ version: 1, pendingPauseEdits: true, staleScenes: false }} rebuilding onRebuild={async () => ({})} />);
+  it("disables the download and says when it comes back while a rebuild runs", () => {
+    render(<FinalVideoDownload url="/x" finalVideo={{ version: 1, pendingPauseEdits: true, staleScenes: false }} building onRebuild={async () => ({})} />);
 
-    expect(screen.getByRole("link", { name: "Download final video" })).toBeInTheDocument();
-    expect(screen.getByText(/new version is being built/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Download final video" })).toBeDisabled();
+    expect(screen.getByText("The download is available again when the new version is ready.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Rebuild final video" })).not.toBeInTheDocument();
   });
 
@@ -2157,8 +2157,9 @@ describe("The Final video section's rebuild (JOS-190)", () => {
     );
 
     const section = within(screen.getByRole("region", { name: "Final video phase" }));
-    expect(section.getByText(/new version is being built/i)).toBeInTheDocument();
-    expect(section.getByRole("link", { name: "Download final video" })).toBeInTheDocument();
+    expect(section.getByText("The download is available again when the new version is ready.")).toBeInTheDocument();
+    expect(section.getByRole("button", { name: "Download final video" })).toBeDisabled();
+    expect(section.getByRole("progressbar", { name: "Final video progress" })).toBeInTheDocument();
   });
 });
 

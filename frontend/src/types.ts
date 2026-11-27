@@ -69,9 +69,19 @@ export interface SessionEventPayload {
   finalVideo?: FinalVideoStatus;
   /** redo-scene-narration (JOS-282) — present once the narration exists: its version and the open take. */
   narration?: NarrationView;
+  /** final-video-build-progress — present only while an assembly attempt runs: how far the final video is. */
+  assemblyProgress?: AssemblyProgress;
   /** ISO-8601 instant the session was registered (documented in `docs/api-spec.yml`, always present). */
   createdAt: string;
   updatedAt: string;
+}
+
+/** final-video-build-progress — how far a final-video build is; `percent` is 0 to 99 while it runs. */
+export interface AssemblyProgress {
+  step: "preparing-clips" | "encoding";
+  clipsDone: number;
+  clipsTotal: number;
+  percent: number;
 }
 
 /** The current final video's place in its history, and what a rebuild would change (adjust-scene-pause, JOS-190). */

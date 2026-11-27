@@ -96,14 +96,22 @@ describe("POST …/narration-takes, keep and discard", () => {
     expect(JSON.stringify(snapshot.session.narration)).not.toContain("Scene 1.");
   });
 
-  it("keeps a take: the narration version is 2 and both scenes show as redone", async () => {
+  it("keeps a take: the narration version is 2, both scenes show as redone, and the final video waits for the User", async () => {
     const { runId, base, takeId } = await readyTake();
+    const rebuild = () => app.inject({ method: "POST", url: `/sessions/${runId}/final-video/rebuild`, payload: {} });
+    const refused = await rebuild();
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json()).toEqual({ ok: false, reason: "take-in-progress" });
+
     const kept = await app.inject({ method: "POST", url: `${base}/${takeId}/keep` });
     expect(kept.statusCode).toBe(200);
     expect(kept.json()).toEqual({ ok: true });
     const snapshot = await read(runId);
     expect(snapshot.session.narration).toEqual({ version: 2 });
     expect(snapshot.scenes.map((scene) => scene.narrationRedone)).toEqual([true, true]);
+    expect(snapshot.session.finalVideo).toMatchObject({ version: 1, staleScenes: true });
+    expect(snapshot.session.state).toBe("final-video");
+    expect((await rebuild()).statusCode).toBe(202);
 
     const twice = await app.inject({ method: "POST", url: `${base}/${takeId}/keep` });
     expect(twice.statusCode).toBe(409);

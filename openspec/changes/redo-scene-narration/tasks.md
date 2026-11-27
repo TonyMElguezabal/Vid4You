@@ -45,6 +45,7 @@
   - it is sample-identical outside the section;
   - the gain matches the RMS levels, limited to ±6 dB, with peaks at or below −1 dBFS;
   - the preview is AAC/M4A from 3 s before to 3 s after, cut at the ends
+- [x] 2.6 Failing test, then the filtergraph limits every part to the base's decoded sample count: a section that reaches the narration's end, whose last interval ends after the last decoded sample, still gives exactly the base's sample count (design Decision 3). Then replay the 2026-11-27 failure of scene 62 offline with real ffmpeg and the saved reading, at no cost
 
 ## 3. Backend: quote, take request, keep and discard
 
@@ -76,10 +77,16 @@
   - broadcast
 - [x] 3.6 Failing tests for keep and discard, then implement them:
   - keep is atomic: kept, the redone scenes' pause edits removed, `final_video_stale` set when a final video exists;
-  - the automatic rebuild starts when every scene is complete, waits for a rebuilding scene, and is held while paused;
+  - keeping starts no assembly (design Decision 15);
   - `take-not-ready`, `take-not-open`, `unknown-take` and `assembly-in-progress`;
   - discard of a ready or failed take changes nothing else;
   - a second take is built on version 2
+- [x] 3.7 Failing tests, then design Decision 15:
+  - a scene rebuild that completes in a session with a final video starts no assembly, and the final video is `staleScenes`;
+  - a session with no final video (failed at assembly) still assembles by itself after a scene rebuild;
+  - continue and restart do not rebuild a stale final video;
+  - `rebuildFinalVideo` refuses `take-in-progress` while a take is generating or ready, and accepts once it is kept or discarded;
+  - remove `rebuildWhenReady`
 
 ## 4. Backend: readers, assembly, reports, routes
 
@@ -98,6 +105,7 @@
   - quote, create, preview (200/206/416, inline, scoped to the session), keep and discard;
   - the session read's `narration` and the per-scene `narrationRedone` and `narrationRedoable`
 - [x] 4.5 Regenerate `docs/api-spec.yml` from `app.swagger()` and keep the drift test green
+- [x] 4.6 Failing route test, then the rebuild route answers 409 `take-in-progress`; regenerate `docs/api-spec.yml`
 
 ## 5. Frontend (tests first)
 
@@ -113,10 +121,15 @@
 - [x] 5.3 Failing component tests for `NarrationTakePanel`:
   - while generating, the scene range;
   - while ready, an audio player with `preload="none"` plus Keep new narration and Discard;
-  - when failed, the cause and Dismiss;
+  - when failed, the cause and Dismiss, inside a message that says the new reading of its scenes could not be used, that the narration and the final video were not changed, and that the User can redo those scenes;
   - hidden when there is no open take;
   - live updates
 - [x] 5.4 Implement the form, the panel, the "Narration redone" badge and the styles: both themes, 375 px width with no horizontal scroll
+- [x] 5.5 Failing component tests, then design Decision 15 on the page:
+  - `FinalVideoDownload` hides "Rebuild final video" while a take is open and asks to keep or discard it first;
+  - a stale final video says it predates the changes and asks to check every scene;
+  - the Redo narration and Rebuild scene confirmations say the User rebuilds the final video after checking the scenes;
+  - `take-in-progress` on a rebuild is shown as a sentence
 
 ## 6. Review and update existing unit tests (MANDATORY)
 
@@ -127,6 +140,7 @@
   - the usage report counts only `stage_attempts`.
 
   Add the new accessible names to the naming suite.
+- [x] 6.2 Update the tests that assume a scene rebuild or a kept take rebuilds the final video by itself, or that continue rebuilds a stale final video
 
 ## 7. Run unit tests and verify database state (MANDATORY)
 
@@ -137,6 +151,7 @@
 
   Compare the indicators afterwards and restore if anything changed.
 - [x] 7.2 Write `reports/YYYY-MM-DD-step-7-unit-test-and-db-verification.md` with the commands, results, before/after comparison and any restoration
+- [x] 7.3 Re-run step 7.1 after design Decision 15 and add the results to the step-7 report
 
 ## 8. Manual endpoint testing with curl (MANDATORY - AGENT MUST EXECUTE)
 
@@ -151,6 +166,7 @@
   - check that `voice-over.mp3` and `narration-timestamps.json` are unchanged (hashes);
   - curl keep again for `take-not-open`
 - [x] 8.5 Restart the backend during a hanging stub take, and check that it is failed with the restart cause and not resent. Delete the throwaway directory and record all commands and answers in `reports/YYYY-MM-DD-step-8-curl.md`
+- [x] 8.6 curl, on a throwaway backend: after Keep no assembly starts and `staleScenes` is true; rebuild while a take is ready answers 409 `take-in-progress`; rebuild after discard is accepted and writes `final-video-2.mp4`. Add it to the step-8 report
 
 ## 9. E2E testing (MANDATORY - AGENT MUST EXECUTE)
 
@@ -161,9 +177,11 @@
   - Keep, then see "Narration redone" and the rebuilt final video;
   - a second take, then Discard, changes nothing
 - [x] 9.2 Run the spec once in WebKit with a local config. Take screenshots in light and dark at 375 and 1440 px, and record them in `reports/YYYY-MM-DD-step-9-e2e.md`
+- [x] 9.3 Update `narration-redo.spec.ts`: after Keep, version 1 stays current and "Rebuild final video" is offered; clicking it gives Version 2. Run it in WebKit and add screenshots of the stale final video card to the step-9 report
 
 ## 10. Update technical documentation (MANDATORY)
 
 - [x] 10.1 `docs/PRD.md` §7.3: add a kept narration take as the second exception to "the audio is not changed", with JOS-282
 - [x] 10.2 `docs/data-model.md`: add `narration_takes` and the current-narration rule. `docs/backend-standards.md` and `docs/frontend-standards.md`: add the routes and the accessible names where they are listed
 - [x] 10.3 Run `openspec validate redo-scene-narration --strict` and `graphify update .`
+- [x] 10.4 Update `docs/PRD.md`, `docs/data-model.md` and `docs/backend-standards.md` where they describe an automatic final-video rebuild; run `openspec validate redo-scene-narration --strict` and `graphify update .`

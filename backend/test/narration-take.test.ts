@@ -28,6 +28,7 @@ import {
   setNarrationTakeLogger,
   type NarrationTakeAudioTools,
 } from "../src/narrationTake.ts";
+import { rebuildFinalVideo } from "../src/finalVideoRebuild.ts";
 import { getProfile, insertProfile } from "../src/providerProfiles.ts";
 import { countedAttemptsOfRuns } from "../src/providerUsageReport.ts";
 import { loadSessionPauses } from "../src/sessionPauses.ts";
@@ -257,7 +258,7 @@ describe("keep and discard (task 3.6)", () => {
     return { ...built, takeId: created.takeId };
   }
 
-  it("keeps a ready take atomically: kept, its scenes' pause edits removed, the final video stale and rebuilt", async () => {
+  it("keeps a ready take atomically: kept, its scenes' pause edits removed, the final video stale, and no assembly started", async () => {
     const { runId, first, second, takeId, calls } = await readyTake("first");
     setScenePauseEdit(runId, first, 2.0);
     setScenePauseEdit(runId, second, 2.5);
@@ -268,6 +269,12 @@ describe("keep and discard (task 3.6)", () => {
     expect(getNarrationTake(runId, takeId)?.state).toBe("kept");
     expect([...getScenePauseEdits(runId)]).toEqual([[second, 2.5]]);
     expect(currentNarration(runId)).toMatchObject({ version: 2, takeId, audioPath: "narration-take-1.flac", spliced: true });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(calls.length).toBe(assembliesBefore);
+    expect(getRun(runId)).toMatchObject({ finalVideoPath: "final-video.mp4", finalVideoStale: true, rebuildRequestedAt: null });
+
+    // The User checks the scenes, then rebuilds (design Decision 15).
+    expect(rebuildFinalVideo(runId)).toEqual({ ok: true, held: false });
     await waitFor(() => getRun(runId)?.finalVideoPath === "final-video-2.mp4");
     expect(calls.length).toBe(assembliesBefore + 1);
     expect(getRun(runId)?.finalVideoStale).toBe(false);
@@ -314,7 +321,6 @@ describe("keep and discard (task 3.6)", () => {
   it("builds a second take on version 2", async () => {
     const { runId, first, takeId } = await readyTake();
     keepNarrationTake(runId, takeId);
-    await waitFor(() => getRun(runId)?.finalVideoPath === "final-video-2.mp4");
 
     const created = createNarrationTake(runId, first, first);
     if (!created.ok) throw new Error("should be accepted");
@@ -322,6 +328,28 @@ describe("keep and discard (task 3.6)", () => {
     expect(getNarrationTake(runId, created.takeId)).toMatchObject({ state: "ready", number: 2, baseVersion: 2 });
     expect(keepNarrationTake(runId, created.takeId)).toEqual({ ok: true });
     expect(currentNarration(runId)).toMatchObject({ version: 3, audioPath: "narration-take-2.flac" });
+  });
+});
+
+describe("Rebuild final video while a take is open (design Decision 15)", () => {
+  it("is refused with take-in-progress while a take is generating or ready, and accepted once it is discarded", async () => {
+    const { runId, first, calls } = await session();
+    setScenePauseEdit(runId, first, 2.0);
+    const created = createNarrationTake(runId, first, first);
+    if (!created.ok) throw new Error("should be accepted");
+    expect(getNarrationTake(runId, created.takeId)?.state).toBe("generating");
+    expect(rebuildFinalVideo(runId)).toEqual({ ok: false, reason: "take-in-progress" });
+
+    await waitFor(settled(runId));
+    expect(getNarrationTake(runId, created.takeId)?.state).toBe("ready");
+    expect(rebuildFinalVideo(runId)).toEqual({ ok: false, reason: "take-in-progress" });
+    expect(getRun(runId)?.rebuildRequestedAt).toBeNull();
+    const assembliesBefore = calls.length;
+
+    expect(discardNarrationTake(runId, created.takeId)).toEqual({ ok: true });
+    expect(rebuildFinalVideo(runId)).toEqual({ ok: true, held: false });
+    await waitFor(() => getRun(runId)?.finalVideoPath === "final-video-2.mp4");
+    expect(calls.length).toBe(assembliesBefore + 1);
   });
 });
 

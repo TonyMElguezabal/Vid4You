@@ -284,8 +284,8 @@ export function SceneRow({ scene, paused, onRetry, onCorrect, onSetPause, onRebu
                 }}
               >
                 <p>
-                  The image and the clip are generated again by the providers, which costs one request each. The rest of the session is kept and
-                  the final video is then rebuilt.
+                  The image and the clip are generated again by the providers, which costs one request each. The rest of the session is kept. When
+                  you have checked the scenes, rebuild the final video.
                 </p>
                 <label htmlFor={`rebuild-image-${scene.sceneId}`}>IMAGE instruction for scene {scene.index}</label>
                 <textarea id={`rebuild-image-${scene.sceneId}`} value={imageDraft} onChange={(e) => setImageDraft(e.target.value)} />

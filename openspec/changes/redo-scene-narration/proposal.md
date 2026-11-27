@@ -9,7 +9,7 @@ When the voice misreads something, for example a number, the User has no way to 
 - The new reading (a "narration take") is split into its scenes. Each scene's speech starts exactly where it started before, and the length of the pause after it is adjusted. A speed change of at most 5% is used only when the pause alone cannot absorb the difference. The narration keeps its exact length, so no scene interval, clip duration or speed factor changes. The new reading is matched to the volume of the speech around it.
 - A take that cannot fit is not used. The User is told which scene did not fit, and why.
 - The User can listen to the redone section, with some narration before and after it, then keep or discard the take. A discarded take changes nothing.
-- Keeping a take makes it part of the session's current narration. Pause changes on the redone scenes are reset, and the final video is rebuilt automatically with the new narration and subtitles. The previous final video stays current until the new one succeeds.
+- Keeping a take makes it part of the session's current narration. Pause changes on the redone scenes are reset. The final video is not rebuilt by itself: the User checks every scene, then clicks "Rebuild final video" for a version with the new narration and subtitles. The previous final video stays current until the new one succeeds. The same holds after a scene rebuild (JOS-235), which no longer rebuilds the final video by itself. A rebuild is refused while a take is generating or waiting for review.
 - Nothing is overwritten. The original voice-over and its timestamps stay locked. Each take is stored as its own record and its own files, and the session shows which scenes have a redone narration.
 - Narration take requests count as voice characters in the provider-usage and estimated-cost reports.
 - **Exception to a locked rule:** the PRD states that the audio is not changed except by pause edits. A kept narration take is a second, explicit exception, and the voice provider may now be called again after the voice-over is complete, for a confirmed take only.
@@ -32,7 +32,9 @@ When the voice misreads something, for example a number, the User has no way to 
 - `scene-pause-adjustment`:
   - pauses are derived from the current narration's timestamps;
   - keeping a take resets the pause edits of the redone scenes;
-  - a kept take that the current final video predates is a reason to rebuild the final video.
+  - a kept take that the current final video predates is a reason to rebuild the final video;
+  - a rebuild is refused with `take-in-progress` while a take is open, and starts only when the User asks for it.
+- `scene-rebuild`: a rebuilt scene no longer rebuilds an existing final video by itself. The page says the final video predates the changes and offers "Rebuild final video" once every scene is complete. A session with no final video still assembles by itself.
 - `admin-reports`: the provider-usage report counts narration take requests as voice attempts, billed by the characters re-read.
 
 ## Impact

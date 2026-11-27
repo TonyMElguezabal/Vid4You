@@ -12,15 +12,16 @@ import {
   writeArtefactOnce,
 } from "../src/db.ts";
 import { rebuildFinalVideo } from "../src/finalVideoRebuild.ts";
-import { launchVideoStageForRun, recoverOnBoot, toSnapshot } from "../src/orchestrator.ts";
+import { continueSession, launchVideoStageForRun, pauseSession, recoverOnBoot, toSnapshot } from "../src/orchestrator.ts";
 import { rebuildScene } from "../src/sceneRebuild.ts";
 import { getStageAttempts } from "../src/db.ts";
 import { resetImageProviderRegistry, setImageProviderRegistry, type ImageProvider } from "../src/imageProvider.ts";
 import { finishedSession, resetRebuildEnvironment, waitFor } from "./rebuildFixtures.ts";
 import { imageProviderFromGenerate } from "./imageProviderFixtures.ts";
 
-// rebuild-scene (JOS-235), design Decisions 5-8 — the final video follows a rebuilt scene by itself, and the existing
-// "Rebuild final video" stays the way out when the automatic rebuild did not finish.
+// rebuild-scene (JOS-235), design Decisions 5-8, changed by redo-scene-narration (JOS-282), design Decision 15 — a rebuilt
+// scene marks an existing final video stale and never rebuilds it by itself: the User checks the scenes, then uses
+// "Rebuild final video". A session with no final video still assembles by itself.
 
 const IMAGE_PROVIDER = "test-image-provider";
 
@@ -58,13 +59,20 @@ afterEach(() => {
   resetImageProviderRegistry();
 });
 
+const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
+
 describe("a session with a final video", () => {
-  it("builds version 2 by itself, with the rebuilt scene's new clip and the other scenes' clips as they were", async () => {
+  it("is not rebuilt by itself after a scene rebuild; the User's rebuild gives version 2 with the new clip", async () => {
     const { runId, sceneIds, calls } = await finishedSession();
 
     expect(rebuildScene(runId, sceneIds[0]!, { imageInstruction: "fixed image" })).toEqual({ ok: true, held: false });
-    expect(getRun(runId)!.finalVideoStale).toBe(true);
+    await waitFor(() => getScene(sceneIds[0]!)?.status === "chunk-complete" && getScene(sceneIds[0]!)?.rebuildCount === 1);
+    await settle();
+    expect(calls).toHaveLength(1);
+    expect(getRun(runId)).toMatchObject({ finalVideoPath: "final-video.mp4", finalVideoStale: true, rebuildRequestedAt: null });
+    expect(toSnapshot(runId)!.session.finalVideo).toMatchObject({ version: 1, staleScenes: true });
 
+    expect(rebuildFinalVideo(runId)).toEqual({ ok: true, held: false });
     await waitFor(() => getRun(runId)?.finalVideoPath === "final-video-2.mp4");
     expect(calls).toHaveLength(2);
     expect(calls[1]!.clips[0]!.clipPath).toMatch(/scene-1-r1\.mp4$/);
@@ -75,27 +83,56 @@ describe("a session with a final video", () => {
     expect(getStageAttempts(runId, "assembly").map((attempt) => attempt.cycle)).toEqual([1, 2]);
   });
 
-  it("builds one version after the last of two rebuilt scenes completes, and none before", async () => {
+  it("starts no assembly after two rebuilt scenes complete", async () => {
     const { runId, sceneIds, calls } = await finishedSession();
 
     rebuildScene(runId, sceneIds[0]!, {});
     rebuildScene(runId, sceneIds[1]!, { imageInstruction: "slow fix" });
     await waitFor(() => getScene(sceneIds[0]!)?.status === "chunk-complete" && getScene(sceneIds[0]!)?.rebuildCount === 1);
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(calls).toHaveLength(1); // scene 2 is still being rebuilt: no assembly yet
+    expect(rebuildFinalVideo(runId)).toEqual({ ok: false, reason: "scenes-not-complete" });
 
     imageGate.release();
+    await waitFor(() => getScene(sceneIds[1]!)?.status === "chunk-complete" && getScene(sceneIds[1]!)?.rebuildCount === 1);
+    await settle();
+    expect(calls).toHaveLength(1);
+    expect(rebuildFinalVideo(runId)).toEqual({ ok: true, held: false });
     await waitFor(() => getRun(runId)?.finalVideoPath === "final-video-2.mp4");
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(calls).toHaveLength(2);
     expect(calls[1]!.clips.map((clip) => clip.clipPath.split("/").at(-1))).toEqual(["scene-1-r1.mp4", "scene-2-r1.mp4"]);
   });
 
-  it("keeps the previous final video and the stale mark when the automatic rebuild fails, and offers Rebuild final video", async () => {
+  it("does not rebuild a stale final video on continue", async () => {
+    const { runId, sceneIds, calls } = await finishedSession();
+    rebuildScene(runId, sceneIds[0]!, {});
+    await waitFor(() => getScene(sceneIds[0]!)?.status === "chunk-complete" && getScene(sceneIds[0]!)?.rebuildCount === 1);
+
+    expect(pauseSession(runId).ok).toBe(true);
+    expect(continueSession(runId).ok).toBe(true);
+
+    await settle();
+    expect(calls).toHaveLength(1);
+    expect(getRun(runId)).toMatchObject({ finalVideoPath: "final-video.mp4", finalVideoStale: true });
+  });
+
+  it("does not rebuild a stale final video after a restart, and keeps offering Rebuild final video", async () => {
+    const { runId, sceneIds, calls } = await finishedSession();
+    rebuildScene(runId, sceneIds[0]!, {});
+    await waitFor(() => getScene(sceneIds[0]!)?.status === "chunk-complete" && getScene(sceneIds[0]!)?.rebuildCount === 1);
+
+    recoverOnBoot();
+
+    await settle();
+    expect(calls).toHaveLength(1);
+    expect(getRun(runId)).toMatchObject({ finalVideoPath: "final-video.mp4", finalVideoStale: true, rebuildRequestedAt: null });
+    expect(toSnapshot(runId)!.session.finalVideo?.staleScenes).toBe(true);
+  });
+
+  it("keeps the previous final video and the stale mark when the User's rebuild fails, and offers Rebuild final video again", async () => {
     const { runId, sceneIds, calls, setMode } = await finishedSession();
+    rebuildScene(runId, sceneIds[0]!, {});
+    await waitFor(() => getScene(sceneIds[0]!)?.status === "chunk-complete" && getScene(sceneIds[0]!)?.rebuildCount === 1);
     setMode("not-retryable");
 
-    rebuildScene(runId, sceneIds[0]!, {});
+    expect(rebuildFinalVideo(runId)).toEqual({ ok: true, held: false });
     await waitFor(() => getStageAttempts(runId, "assembly").at(-1)?.outcome === "not-retryable");
 
     const run = getRun(runId)!;
@@ -113,20 +150,6 @@ describe("a session with a final video", () => {
     await waitFor(() => getRun(runId)?.finalVideoPath === "final-video-2.mp4");
     expect(calls.at(-1)!.clips[0]!.clipPath).toMatch(/scene-1-r1\.mp4$/);
     expect(getRun(runId)!.finalVideoStale).toBe(false);
-  });
-
-  it("does not relaunch an interrupted automatic rebuild after a restart, and keeps offering Rebuild final video", async () => {
-    const { runId, sceneIds, calls, setMode } = await finishedSession();
-    setMode({ slowMs: 5000 });
-    rebuildScene(runId, sceneIds[0]!, {});
-    await waitFor(() => getStageAttempts(runId, "assembly").at(-1)?.outcome === "in-flight");
-
-    recoverOnBoot();
-
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(calls).toHaveLength(2); // the first assembly and the interrupted rebuild
-    expect(getRun(runId)).toMatchObject({ finalVideoPath: "final-video.mp4", finalVideoStale: true, rebuildRequestedAt: null });
-    expect(toSnapshot(runId)!.session.finalVideo?.staleScenes).toBe(true);
   });
 });
 

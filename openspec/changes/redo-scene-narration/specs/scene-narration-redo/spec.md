@@ -84,7 +84,7 @@ The system SHALL split a returned take at its own scene boundaries, using the ta
 - the pause SHALL stay between 0.2 s and the larger of 3.0 s and the scene's pause before the take;
 - when the pause alone cannot absorb the difference, the scene's speech SHALL be sped up or slowed down by at most 5%, and by the least amount that fits; otherwise its speed SHALL be unchanged.
 
-Every cut SHALL be made in silence, 50 ms before a speech onset or after a speech end. The take's side of each join SHALL get a 10 ms fade; the base narration is never faded. The resulting narration SHALL have exactly as many samples as the narration the take was built on. Outside the replaced section, it SHALL be sample-for-sample identical to that narration. No stored interval, requested duration or speed factor SHALL change.
+Every cut SHALL be made in silence, 50 ms before a speech onset or after a speech end. The take's side of each join SHALL get a 10 ms fade; the base narration is never faded. The resulting narration SHALL have exactly as many samples as the narration the take was built on. Outside the replaced section, it SHALL be sample-for-sample identical to that narration. A section that reaches the narration's end SHALL end at the last decoded sample of that narration, even when the last scene's stored interval ends a little later (an MP3's reported duration includes its encoder padding); only that scene's final pause is shortened. No stored interval, requested duration or speed factor SHALL change.
 
 When a scene's part cannot fit within these limits, the take SHALL fail. Its cause SHALL name the scene and say whether its new reading is too long or too short, and by how many seconds at its normal speed.
 
@@ -93,6 +93,11 @@ When a scene's part cannot fit within these limits, the take SHALL fail. Its cau
 - **WHEN** the take is fitted
 - **THEN** scene 2's speech keeps its speed, starts at the interval's start and is followed by a 1.80 s pause
 - **AND** the new narration has as many samples as the one before, and is identical before the section and after it
+
+#### Scenario: The last scene of the session
+- **GIVEN** scene 62 is the last scene, its interval ends at 725.2376 s, and the narration decodes to 31,981,568 samples at 44.1 kHz (725.2056 s)
+- **WHEN** a take of scene 62 is fitted and spliced
+- **THEN** the new narration has exactly 31,981,568 samples, and scene 62's final pause is 32 ms shorter than planned
 
 #### Scenario: A slightly long reading
 - **GIVEN** a scene whose interval is 6.00 s and whose new reading has 5.95 s of speech
@@ -156,7 +161,7 @@ A fitted take SHALL wait for review. The system SHALL serve a preview of it at `
 - **WHEN** a kept take is kept again
 - **THEN** the answer is 409 `take-not-open`
 
-### Requirement: Keeping a take makes it the current narration and rebuilds the final video
+### Requirement: Keeping a take makes it the current narration, and the User rebuilds the final video
 
 A kept take SHALL become the session's current narration. The session's narration version SHALL be 1 for the original voice-over, and one more for each kept take. Each take SHALL be built on the narration that was current when it was requested. Keeping SHALL be refused with 409 `assembly-in-progress` while an assembly attempt is in flight or a final-video rebuild is requested.
 
@@ -165,8 +170,8 @@ In one atomic step, keeping SHALL:
 - remove the pause edits of the take's scenes;
 - when the session has a final video, mark it as older than the current narration.
 
-After that step, the final video SHALL be rebuilt automatically, as after a scene rebuild:
-- the rebuild starts only when every scene is `chunk-complete`;
+Keeping SHALL NOT start an assembly. The User checks the scenes and then rebuilds the final video with "Rebuild final video" (spec `scene-pause-adjustment`):
+- the rebuild is accepted only when every scene is `chunk-complete` and no take is generating or waiting for review;
 - it writes a new version with the current narration and the remaining pause edits;
 - the previous version stays current until the new one succeeds;
 - a failed rebuild keeps "Rebuild final video" offered.
@@ -176,18 +181,18 @@ A session without a final video SHALL use the current narration in its first ass
 #### Scenario: Keeping a take after the final video
 - **GIVEN** a session in `final-video` with version 1
 - **WHEN** the User keeps a take of scenes 1 and 2
-- **THEN** the narration version is 2, and a rebuild starts without any action by the User
-- **AND** on success `final-video-2.mp4` is current, and its audio and subtitles are the new narration
+- **THEN** the narration version is 2, no assembly starts, version 1 stays current, and "Rebuild final video" is offered
+- **AND** when the User rebuilds and the rebuild succeeds, `final-video-2.mp4` is current, and its audio and subtitles are the new narration
 
 #### Scenario: Keeping while a scene is being rebuilt
 - **GIVEN** scene 7 is being rebuilt
 - **WHEN** the User keeps a take of scenes 1 and 2
-- **THEN** the take is kept, and the final video is rebuilt once scene 7 completes, with both changes
+- **THEN** the take is kept, no assembly starts when scene 7 completes, and the User's rebuild then has both changes
 
 #### Scenario: Pause edits on the redone scenes
 - **GIVEN** scene 2 and scene 9 have pause edits
 - **WHEN** the User keeps a take of scenes 1 and 2
-- **THEN** scene 2's edit is removed, and scene 9's edit is kept and applied in the rebuild
+- **THEN** scene 2's edit is removed, and scene 9's edit is kept and applied in the User's rebuild
 
 #### Scenario: A second take on top of a kept one
 - **GIVEN** a kept take of scenes 1 and 2 (narration version 2)
@@ -232,14 +237,14 @@ When the provider fails, times out, returns unusable audio or timestamps, or the
 The expanded details of a scene whose narration can be redone SHALL show a "Redo narration" action while no take is generating or waiting for review and the session is not assembling. The action SHALL open an inline form:
 - it chooses the last scene, from this scene to a later scene;
 - for the current choice, it shows the text to be read again, its characters, its estimated cost (or that the price is not set), and the scenes whose pause edits will be reset;
-- it states that the voice provider reads the text again and is billed, that the User can listen before keeping it, and that the final video is then rebuilt.
+- it states that the voice provider reads the text again and is billed, that the User can listen before keeping it, and that the User rebuilds the final video after checking the scenes.
 
 Confirming SHALL create the take.
 
 A session-level panel SHALL show the latest open take:
 - while generating, which scenes are being read again;
 - while waiting for review, an audio player for its preview with "Keep new narration" and "Discard";
-- when failed, its cause and "Dismiss".
+- when failed: that the new reading of its scenes could not be used, then its cause, then that the narration and the final video were not changed and that the User can read those scenes again with Redo narration; and "Dismiss".
 
 A scene covered by a kept take SHALL show "Narration redone" on its card. Refusals SHALL be shown as sentences, not codes. Every control SHALL work with the keyboard and name its scenes.
 
@@ -251,8 +256,13 @@ A scene covered by a kept take SHALL show "Narration redone" on its card. Refusa
 #### Scenario: Review from the page
 - **WHEN** the take is waiting for review
 - **THEN** the panel shows its preview player with Keep new narration and Discard
-- **AND** after Keep, the panel disappears, scenes 1 and 2 show "Narration redone", and the final video rebuild is shown as running
+- **AND** after Keep, the panel disappears, scenes 1 and 2 show "Narration redone", no rebuild is running, and "Rebuild final video" is offered
+
+#### Scenario: A failed take explains itself
+- **GIVEN** a take of scene 4 failed because its reading is too long by 1.9 s
+- **THEN** the panel says "The new reading of scene 4 could not be used. Scene 4's new reading is too long by 1.9 s at its normal speed. The narration and the final video were not changed. Use Redo narration on scene 4 to read it again.", and offers Dismiss
 
 #### Scenario: No action while a take is open
 - **GIVEN** a take is waiting for review
 - **THEN** no scene offers Redo narration
+- **AND** "Rebuild final video" is not offered, and the final video card asks the User to keep or discard the new narration first
