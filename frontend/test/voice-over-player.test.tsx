@@ -7,6 +7,7 @@ import type { NarrationView, PhaseProgress, SceneEventPayload, SessionEventPaylo
 
 // listen-to-voice-over — the Voice-over section plays the current narration with Play, Pause and Stop, from the
 // moment the voice-over is stored (spec: voice-over-playback; design Decisions 3-5).
+// polish-scene-and-admin-ui, design Decisions 1-2 — one Play/Pause button; Stop only once away from the start.
 
 const noop = async () => {};
 const audioUrl = (version: number) => `/sessions/s1/narration/audio?v=${version}`;
@@ -62,6 +63,9 @@ beforeEach(() => {
     this.dispatchEvent(new Event("pause"));
   });
   const times = new WeakMap<HTMLMediaElement, number>();
+  vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(function (this: HTMLMediaElement) {
+    times.set(this, 0);
+  });
   Object.defineProperty(HTMLMediaElement.prototype, "currentTime", {
     configurable: true,
     get(this: HTMLMediaElement) {
@@ -79,10 +83,11 @@ afterEach(() => {
 
 const audio = () => screen.getByLabelText<HTMLAudioElement>("Voice-over");
 const button = (action: "Play" | "Pause" | "Stop") => screen.getByRole("button", { name: `${action} voice-over` });
+const queryButton = (action: "Play" | "Pause" | "Stop") => screen.queryByRole("button", { name: `${action} voice-over` });
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe("The Voice-over section shows the player once the voice-over is stored", () => {
-  it("shows Play, Pause and Stop in the Voice-over section before any scene, loading nothing", () => {
+  it("shows Play and no Stop in the Voice-over section before any scene, loading nothing", () => {
     renderPage(sessionWith({ version: 1, audioUrl: audioUrl(1) }));
 
     const section = screen.getByRole("region", { name: "Voice-over phase" });
@@ -91,9 +96,9 @@ describe("The Voice-over section shows the player once the voice-over is stored"
     expect(audio()).toHaveAttribute("src", `${API_BASE}${audioUrl(1)}`);
     expect(audio()).toHaveAttribute("preload", "none");
     expect(audio()).not.toHaveAttribute("controls");
-    expect(button("Play")).toBeEnabled();
-    expect(button("Pause")).toBeDisabled();
-    expect(button("Stop")).toBeDisabled();
+    expect(button("Play")).toHaveAttribute("title", "Play");
+    expect(queryButton("Pause")).not.toBeInTheDocument();
+    expect(queryButton("Stop")).not.toBeInTheDocument();
     expect(playSpy).not.toHaveBeenCalled();
   });
 
@@ -111,16 +116,16 @@ describe("Play, Pause and Stop", () => {
     renderPage(sessionWith({ version: 1, audioUrl: audioUrl(1) }));
 
     await user.click(button("Play"));
-    expect(button("Play")).toBeDisabled();
-    expect(button("Pause")).toBeEnabled();
-    expect(button("Stop")).toBeEnabled();
+    expect(queryButton("Play")).not.toBeInTheDocument();
+    expect(button("Pause")).toBeInTheDocument();
+    expect(button("Stop")).toBeInTheDocument();
 
     audio().currentTime = 7;
     fireEvent.timeUpdate(audio());
     await user.click(button("Pause"));
     expect(audio().currentTime).toBe(7);
-    expect(button("Play")).toBeEnabled();
-    expect(button("Stop")).toBeEnabled();
+    expect(button("Play")).toBeInTheDocument();
+    expect(button("Stop")).toBeInTheDocument();
 
     await user.click(button("Play"));
     expect(playSpy).toHaveBeenCalledTimes(2);
@@ -128,9 +133,9 @@ describe("Play, Pause and Stop", () => {
 
     await user.click(button("Stop"));
     expect(audio().currentTime).toBe(0);
-    expect(button("Play")).toBeEnabled();
-    expect(button("Pause")).toBeDisabled();
-    expect(button("Stop")).toBeDisabled();
+    expect(button("Play")).toHaveFocus();
+    expect(queryButton("Pause")).not.toBeInTheDocument();
+    expect(queryButton("Stop")).not.toBeInTheDocument();
   });
 
   it("is ready to play again when the narration ends", async () => {
@@ -140,7 +145,7 @@ describe("Play, Pause and Stop", () => {
     fireEvent.ended(audio());
 
     expect(button("Play")).toBeEnabled();
-    expect(button("Pause")).toBeDisabled();
+    expect(queryButton("Pause")).not.toBeInTheDocument();
   });
 
   it("loads a new version from the start, not playing", async () => {
@@ -154,7 +159,7 @@ describe("Play, Pause and Stop", () => {
     expect(audio()).not.toBe(before);
     expect(audio()).toHaveAttribute("src", `${API_BASE}${audioUrl(2)}`);
     expect(button("Play")).toBeEnabled();
-    expect(button("Stop")).toBeDisabled();
+    expect(queryButton("Stop")).not.toBeInTheDocument();
   });
 });
 
@@ -169,11 +174,11 @@ describe("One player plays at a time on the session page", () => {
     await user.click(screen.getByRole("button", { name: "Play scene 2 clip" }));
     await user.click(button("Play"));
     expect(pauseClip).toHaveBeenCalledTimes(1);
-    expect(screen.getByRole("button", { name: "Play scene 2 clip" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Play scene 2 clip" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Play scene 2 clip" }));
     expect(pauseVoiceOver).toHaveBeenCalledTimes(1);
-    expect(button("Play")).toBeEnabled();
+    expect(button("Play")).toBeInTheDocument();
   });
 });
 

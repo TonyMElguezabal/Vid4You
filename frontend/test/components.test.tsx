@@ -549,12 +549,18 @@ describe("Accessible naming convention (Decision 5)", () => {
     expect(screen.getByRole("button", { name: "View scene 7 details" })).toBeInTheDocument();
   });
 
-  it("names a scene's clip player and its three buttons after the scene (JOS-281)", () => {
+  it("names a scene's clip player and its buttons after the scene (JOS-281; polish-scene-and-admin-ui)", async () => {
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockImplementation(function (this: HTMLMediaElement) {
+      this.dispatchEvent(new Event("play"));
+      return Promise.resolve();
+    });
     const scene = makeScene({ sceneId: "n1", index: 7, state: "chunk-complete", result: { videoUrl: "/sessions/s1/scenes/n1/clip" } });
     render(<SceneRow scene={scene} onRetry={async () => {}} onCorrect={async () => {}} />);
 
     expect(screen.getByRole("group", { name: "Scene 7 clip player" })).toBeInTheDocument();
-    for (const action of ["Play", "Pause", "Stop"]) expect(screen.getByRole("button", { name: `${action} scene 7 clip` })).toBeInTheDocument();
+    await userEvent.setup().click(screen.getByRole("button", { name: "Play scene 7 clip" }));
+    for (const action of ["Pause", "Stop"]) expect(screen.getByRole("button", { name: `${action} scene 7 clip` })).toBeInTheDocument();
+    vi.restoreAllMocks();
   });
 
   it("names Redo narration, its form, its last-scene choice, and the take review after their scenes (JOS-282)", async () => {
