@@ -8,6 +8,8 @@ import type { SceneEventPayload } from "../src/types";
 
 // watch-scene-clips (JOS-281) — the scene card plays a stored clip with Play, Pause and Stop; one clip at a time;
 // nothing is downloaded before Play (design Decisions 4-6).
+// polish-scene-and-admin-ui, design Decisions 1-2 — Play and Pause are one icon button named after what it does next;
+// Stop is shown only once the clip has left its start, and brings the poster back with load().
 
 function makeScene(overrides: Partial<SceneEventPayload>): SceneEventPayload {
   return {
@@ -34,6 +36,7 @@ const props = { onRetry: noop, onCorrect: noop };
 let playResult: () => Promise<void>;
 let playSpy: ReturnType<typeof vi.spyOn>;
 let pauseSpy: ReturnType<typeof vi.spyOn>;
+let loadSpy: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
   playResult = () => Promise.resolve();
   playSpy = vi.spyOn(HTMLMediaElement.prototype, "play").mockImplementation(function (this: HTMLMediaElement) {
@@ -45,6 +48,10 @@ beforeEach(() => {
     this.dispatchEvent(new Event("pause"));
   });
   let time = 0;
+  // A real load() rewinds and shows the poster again.
+  loadSpy = vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => {
+    time = 0;
+  });
   Object.defineProperty(HTMLMediaElement.prototype, "currentTime", {
     configurable: true,
     get: () => time,
@@ -60,10 +67,11 @@ afterEach(() => {
 
 const clip = (index: number) => screen.getByLabelText<HTMLVideoElement>(`Scene ${index} clip`);
 const button = (action: "Play" | "Pause" | "Stop", index: number) => screen.getByRole("button", { name: `${action} scene ${index} clip` });
+const queryButton = (action: "Play" | "Pause" | "Stop", index: number) => screen.queryByRole("button", { name: `${action} scene ${index} clip` });
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe("The scene card shows a stored clip (JOS-281)", () => {
-  it("shows the clip and the three buttons on the collapsed card, loading nothing before Play", () => {
+  it("shows the clip and an icon-only Play on the collapsed card, with no Pause or Stop, loading nothing before Play", () => {
     render(<SceneRow scene={withClip(2)} {...props} />);
 
     const video = clip(2);
@@ -72,7 +80,10 @@ describe("The scene card shows a stored clip (JOS-281)", () => {
     expect(video).toHaveAttribute("poster", `${API_BASE}${imageUrl(2)}`);
     expect(video).toHaveAttribute("preload", "none");
     expect(video).not.toHaveAttribute("controls");
-    for (const action of ["Play", "Pause", "Stop"] as const) expect(button(action, 2)).toBeInTheDocument();
+    expect(button("Play", 2)).toHaveAttribute("title", "Play");
+    expect(button("Play", 2).textContent).toBe("");
+    expect(queryButton("Pause", 2)).not.toBeInTheDocument();
+    expect(queryButton("Stop", 2)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "View scene 2 details" })).toHaveAttribute("aria-expanded", "false");
   });
 
@@ -106,30 +117,27 @@ describe("Play, Pause and Stop (JOS-281)", () => {
   it("plays, pauses keeping the position, and resumes from it", async () => {
     const user = userEvent.setup();
     render(<SceneRow scene={withClip(2)} {...props} />);
-    expect(button("Play", 2)).toBeEnabled();
-    expect(button("Pause", 2)).toBeDisabled();
-    expect(button("Stop", 2)).toBeDisabled();
+    expect(queryButton("Stop", 2)).not.toBeInTheDocument();
 
     await user.click(button("Play", 2));
     expect(playSpy).toHaveBeenCalledTimes(1);
-    expect(button("Play", 2)).toBeDisabled();
-    expect(button("Pause", 2)).toBeEnabled();
-    expect(button("Stop", 2)).toBeEnabled();
+    expect(queryButton("Play", 2)).not.toBeInTheDocument();
+    expect(button("Pause", 2)).toHaveAttribute("title", "Pause");
+    expect(button("Stop", 2)).toHaveAttribute("title", "Stop");
 
     clip(2).currentTime = 3;
     fireEvent.timeUpdate(clip(2));
     await user.click(button("Pause", 2));
     expect(clip(2).currentTime).toBe(3);
-    expect(button("Play", 2)).toBeEnabled();
-    expect(button("Pause", 2)).toBeDisabled();
-    expect(button("Stop", 2)).toBeEnabled(); // paused away from the start
+    expect(queryButton("Pause", 2)).not.toBeInTheDocument();
+    expect(button("Stop", 2)).toBeInTheDocument(); // paused away from the start
 
     await user.click(button("Play", 2));
     expect(playSpy).toHaveBeenCalledTimes(2);
     expect(clip(2).currentTime).toBe(3);
   });
 
-  it("stops and returns to the start", async () => {
+  it("stops, returns to the start showing the poster, hides Stop and keeps the focus on Play", async () => {
     const user = userEvent.setup();
     render(<SceneRow scene={withClip(2)} {...props} />);
     await user.click(button("Play", 2));
@@ -139,20 +147,34 @@ describe("Play, Pause and Stop (JOS-281)", () => {
     await user.click(button("Stop", 2));
 
     expect(pauseSpy).toHaveBeenCalled();
+    expect(loadSpy).toHaveBeenCalledTimes(1);
     expect(clip(2).currentTime).toBe(0);
-    expect(button("Play", 2)).toBeEnabled();
-    expect(button("Pause", 2)).toBeDisabled();
-    expect(button("Stop", 2)).toBeDisabled();
+    expect(button("Play", 2)).toHaveFocus();
+    expect(queryButton("Pause", 2)).not.toBeInTheDocument();
+    expect(queryButton("Stop", 2)).not.toBeInTheDocument();
   });
 
-  it("is ready to play again when the clip ends", async () => {
+  it("leaves the playing state on Stop even though load() drops the queued pause event, as a browser does", async () => {
+    const user = userEvent.setup();
+    render(<SceneRow scene={withClip(2)} {...props} />);
+    await user.click(button("Play", 2));
+    pauseSpy.mockImplementation(() => {}); // the "pause" event is queued, then discarded by load()
+
+    await user.click(button("Stop", 2));
+
+    expect(button("Play", 2)).toBeInTheDocument();
+    expect(queryButton("Stop", 2)).not.toBeInTheDocument();
+  });
+
+  it("is ready to play again when the clip ends, keeping Stop until it is pressed", async () => {
     render(<SceneRow scene={withClip(2)} {...props} />);
     await userEvent.setup().click(button("Play", 2));
 
     fireEvent.ended(clip(2));
 
     expect(button("Play", 2)).toBeEnabled();
-    expect(button("Pause", 2)).toBeDisabled();
+    expect(queryButton("Pause", 2)).not.toBeInTheDocument();
+    expect(button("Stop", 2)).toBeInTheDocument();
   });
 
   it("works from the keyboard", async () => {
@@ -177,8 +199,8 @@ describe("Only one scene clip plays at a time (JOS-281)", () => {
     await user.click(button("Play", 2));
 
     expect(pauseFirst).toHaveBeenCalledTimes(1);
-    expect(button("Play", 1)).toBeEnabled();
-    expect(button("Pause", 2)).toBeEnabled();
+    expect(button("Play", 1)).toBeInTheDocument();
+    expect(button("Pause", 2)).toBeInTheDocument();
   });
 });
 
@@ -221,8 +243,8 @@ describe("A rebuilt scene (JOS-281)", () => {
 
     expect(clip(2)).toHaveAttribute("src", `${API_BASE}${clipUrl(2)}?r=1`);
     expect(button("Play", 2)).toBeEnabled();
-    expect(button("Pause", 2)).toBeDisabled();
-    expect(button("Stop", 2)).toBeDisabled();
+    expect(queryButton("Pause", 2)).not.toBeInTheDocument();
+    expect(queryButton("Stop", 2)).not.toBeInTheDocument();
   });
 });
 

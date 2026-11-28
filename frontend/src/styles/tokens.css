@@ -36,6 +36,10 @@
   --color-edge: #d6d6dc;
   --color-cast: rgba(0, 0, 0, 0.1);
   --color-bar: rgba(245, 245, 247, 0.72);
+  /* polish-scene-and-admin-ui — the player bar over a clip, the same in both themes (it sits on the picture). */
+  --color-scrim: rgba(0, 0, 0, 0.6);
+  --color-scrim-solid: #1d1d1f;
+  --color-on-scrim: #ffffff;
   --extrude-sm: inset 0 1px 0 var(--color-highlight), 0 2px 0 var(--color-edge), 0 4px 8px var(--color-cast);
   --extrude: inset 0 1px 0 var(--color-highlight), 0 4px 0 var(--color-edge), 0 8px 18px var(--color-cast);
   --extrude-lift: inset 0 1px 0 var(--color-highlight), 0 7px 0 var(--color-edge), 0 16px 30px var(--color-cast);

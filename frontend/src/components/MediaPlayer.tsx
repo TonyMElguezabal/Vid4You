@@ -28,9 +28,12 @@ interface Props {
  * watch-scene-clips (JOS-281), design Decisions 4-6; listen-to-voice-over, design Decision 3 — stored media with Play,
  * Pause and Stop and no other control. Nothing is downloaded before Play (`preload="none"`); the button states follow
  * the element's own events.
+ * polish-scene-and-admin-ui, design Decisions 1-2 — Play and Pause are one icon button named after what it does next;
+ * Stop is shown only once the media has left its start.
  */
 export function MediaPlayer({ kind, src, poster, name, mediaLabel, groupLabel, failure, className, mediaClassName }: Props) {
   const mediaRef = useRef<HTMLVideoElement & HTMLAudioElement>(null);
+  const toggleRef = useRef<HTMLButtonElement>(null);
   const [playing, setPlaying] = useState(false);
   const [atStart, setAtStart] = useState(true);
   const [failed, setFailed] = useState(false);
@@ -52,8 +55,13 @@ export function MediaPlayer({ kind, src, poster, name, mediaLabel, groupLabel, f
     const media = mediaRef.current;
     if (!media) return;
     media.pause();
-    media.currentTime = 0;
+    // load() rewinds and brings the poster back; with preload="none" it downloads nothing. It also discards the
+    // queued "pause" event, so the playing state is left here rather than in onPause.
+    media.load();
+    stopped();
     setAtStart(true);
+    // Stop disappears, so the focus moves to the toggle rather than to the page body.
+    toggleRef.current?.focus();
   }
 
   function stopped() {
@@ -85,19 +93,22 @@ export function MediaPlayer({ kind, src, poster, name, mediaLabel, groupLabel, f
   return (
     <div className={`media-player ${className}`} role="group" aria-label={groupLabel}>
       {kind === "video" ? <video {...mediaProps} poster={poster} playsInline /> : <audio {...mediaProps} />}
-      <div className="media-controls">
-        <button type="button" aria-label={`Play ${name}`} disabled={playing} onClick={play}>
-          <Icon name="play" />
-          Play
+      <div className="transport">
+        <button
+          ref={toggleRef}
+          type="button"
+          className="icon-button"
+          aria-label={`${playing ? "Pause" : "Play"} ${name}`}
+          title={playing ? "Pause" : "Play"}
+          onClick={playing ? () => mediaRef.current?.pause() : play}
+        >
+          <Icon name={playing ? "pause" : "play"} />
         </button>
-        <button type="button" aria-label={`Pause ${name}`} disabled={!playing} onClick={() => mediaRef.current?.pause()}>
-          <Icon name="pause" />
-          Pause
-        </button>
-        <button type="button" aria-label={`Stop ${name}`} disabled={!playing && atStart} onClick={stop}>
-          <Icon name="stop" />
-          Stop
-        </button>
+        {(playing || !atStart) && (
+          <button type="button" className="icon-button" aria-label={`Stop ${name}`} title="Stop" onClick={stop}>
+            <Icon name="stop" />
+          </button>
+        )}
       </div>
       {failed && <p role="status">{failure}</p>}
     </div>
